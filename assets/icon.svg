@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Sidebar Thread Tree: a parent Thread and the Threads it delegated, on codexhost's colours. -->
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F7F8FA"/>
+      <stop offset="1" stop-color="#E7EBF1"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="128" fill="url(#tile)"/>
+  <rect x="0.75" y="0.75" width="510.5" height="510.5" rx="127.25" fill="none" stroke="#D5DCE5" stroke-width="1.5"/>
+  <g transform="translate(262 254) scale(1.08) translate(-251 -260)">
+    <g fill="none" stroke="#9AA9BE" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M160 196 V236 Q160 276 200 276 H214"/>
+      <path d="M160 196 V332 Q160 372 200 372 H214"/>
+    </g>
+    <circle cx="160" cy="156" r="38" fill="#12305A"/>
+    <rect x="224" y="132" width="156" height="48" rx="24" fill="#12305A"/>
+    <circle cx="250" cy="276" r="30" fill="#1BA37B"/>
+    <rect x="300" y="256" width="80" height="40" rx="20" fill="#7D90AA"/>
+    <circle cx="250" cy="372" r="30" fill="#12305A"/>
+    <rect x="300" y="352" width="56" height="40" rx="20" fill="#7D90AA"/>
+  </g>
+</svg>

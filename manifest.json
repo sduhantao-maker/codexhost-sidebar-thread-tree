@@ -1,0 +1,39 @@
+{
+  "manifestVersion": 1,
+  "id": "sidebar-thread-tree",
+  "name": {
+    "en": "Sidebar Thread Tree",
+    "zh-CN": "侧栏委派树"
+  },
+  "version": "0.1.1",
+  "desktopApi": 1,
+  "description": {
+    "en": "Folds delegated Threads under their parent in the sidebar, with live status at a glance.",
+    "zh-CN": "把委派出去的子会话收进父会话下方，进度和待处理一眼可见。"
+  },
+  "author": "sduhantao-maker",
+  "repository": "https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree",
+  "details": {
+    "en": "Delegated Threads fold under the Thread that started them, so a busy project reads as a few tidy trees instead of one long list. Each tree keeps its members together, even when the parent sits further down or is not shown.\n\n- **Progress at a glance.** A collapsed parent keeps one summary line, such as \"5 child sessions · 2 running · 1 needs approval\".\n- **Expand in place.** Hover a parent's agent icon and it turns into an arrow. Select it, or the summary line, and nested delegations unfold level by level along rounded guides.\n- **See what needs you.** Every child row shows its agent, title and live status, so running work and Threads waiting for you stand out.\n- **One click away.** Select any row to open it through Desktop's own navigation. Opening a Thread expands its parents, and Desktop's next and previous Thread shortcuts follow the tree.\n- **Native look and feel.** Rows take their size, fonts and colors from Desktop's sidebar, in light and dark themes. Motion follows Desktop's own curve and is skipped under Reduce Motion. Expanded trees are remembered on this device.\n\nDisplay only: Thread ownership, execution, titles, pinning, archiving and Desktop's order stay as they are, and rows from remote Hosts are left alone. Turn the extension off and the sidebar is exactly as before.\n\nShares the sidebar badge slot with Sidebar Delegation Badges, so only one of the two can be on at a time.",
+    "zh-CN": "委派出去的子会话会收在发起它的父会话下方，项目再忙，侧栏也只是几棵层次分明的树。即使父会话排得靠后或没有显示出来，整棵树也会聚在一起，不会散落。\n\n- **不点开也能看进度。** 父会话收起时保留一行小结，例如“5 个子会话 · 2 运行中 · 1 待批准”。\n- **原地展开。** 鼠标移到父会话的 Agent 图标上，图标会变成箭头。点击箭头或小结行，多层委派沿圆角连线逐级展开。\n- **需要你处理的，一眼就能找到。** 每个子会话都显示 Agent 图标、标题和实时状态，正在运行还是等待处理一目了然。\n- **一键直达。** 点击任意一行，通过 Desktop 自己的导航打开。打开某个会话时，它的上级会自动展开；切换上一个、下一个会话的快捷键也按树的顺序走。\n- **与原生侧栏浑然一体。** 行高、字体和颜色都取自 Desktop 侧栏，浅色深色主题都合适。展开收起的动效沿用 Desktop 自己的曲线，开启“减少动态效果”时不播放。展开状态保存在本机。\n\n插件只改变显示方式，会话的归属、执行、标题、置顶、归档和 Desktop 的排序都保持不变，远程 Host 的行也不受影响。关闭插件后，侧栏立即恢复原样。\n\n本插件与「侧栏委派角标」共用侧栏角标槽位，两者同一时间只能启用一个。"
+  },
+  "icon": "assets/icon.png",
+  "screenshots": [
+    "assets/expanded.png",
+    "assets/collapsed.png",
+    "assets/hover.png",
+    "assets/dark.png"
+  ],
+  "desktop": {
+    "script": "desktop.js",
+    "style": "desktop.css"
+  },
+  "slots": [
+    "sidebar.thread-badge",
+    "sidebar.thread-layout"
+  ],
+  "categories": [
+    "interface",
+    "workflow"
+  ]
+}
