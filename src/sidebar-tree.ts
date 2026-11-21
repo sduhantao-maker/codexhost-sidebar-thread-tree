@@ -111,6 +111,21 @@ function detectLocale(doc: Document): SidebarTreeLocale {
   return /^zh\b/iu.test(lang) ? "zh-CN" : "en";
 }
 
+/**
+ * Whether a Thread in the tree no longer exists. The Host keeps the delegation of a deleted
+ * Thread and still lists it, but cannot read it: its status is unknown, it has no title, and
+ * Desktop has no row for it. Such a row could not be opened or acted on, so it is left out.
+ * A Thread the Host has not read yet looks the same but usually has a Desktop row; it shows once
+ * the Host reads it.
+ */
+function isDeleted(
+  threadId: string,
+  node: ThreadTreeNode,
+  rows: ReadonlyMap<string, readonly HTMLElement[]>,
+): boolean {
+  return node.status === "unknown" && !node.title?.trim() && !rows.has(threadId);
+}
+
 function mapTreeStatus(status: ThreadTreeStatus): SidebarThreadTreeStatus {
   if (status === "waiting") return "pending";
   if (status === "running") return "running";
@@ -357,6 +372,7 @@ export function activate(
       threads.set(threadId, {
         status: mapTreeStatus(node.status),
         archived: node.archived,
+        deleted: isDeleted(threadId, node, rows),
         order: 0,
       });
     }

@@ -35,7 +35,10 @@ const MAX_ANCESTRY = 64;
 /** What the Host describes about a Thread placed in the tree. */
 export interface SidebarThreadTreeThread {
   status: SidebarThreadTreeStatus;
+  /** The user archived the Thread. */
   archived: boolean;
+  /** The Thread no longer exists. Like an archived one, it and its subtree are left out. */
+  deleted?: boolean;
   /** Position among siblings: larger sorts first (delegation time). */
   order: number;
 }
@@ -125,7 +128,7 @@ export function planSidebarThreadTree(input: {
   };
   const showable = (threadId: string): boolean => {
     const thread = threads.get(threadId);
-    return thread !== undefined && !thread.archived;
+    return thread !== undefined && !thread.archived && thread.deleted !== true;
   };
 
   const childrenOf = new Map<string, string[]>();

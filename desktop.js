@@ -245,7 +245,7 @@
     };
     const showable = (threadId) => {
       const thread = threads.get(threadId);
-      return thread !== void 0 && !thread.archived;
+      return thread !== void 0 && !thread.archived && thread.deleted !== true;
     };
     const childrenOf = /* @__PURE__ */ new Map();
     for (const childId of Object.keys(input.parents)) {
@@ -1186,6 +1186,9 @@
     const lang = doc.documentElement.lang.trim() || doc.defaultView?.navigator.language || "";
     return /^zh\b/iu.test(lang) ? "zh-CN" : "en";
   }
+  function isDeleted(threadId, node, rows) {
+    return node.status === "unknown" && !node.title?.trim() && !rows.has(threadId);
+  }
   function mapTreeStatus(status) {
     if (status === "waiting") return "pending";
     if (status === "running") return "running";
@@ -1375,6 +1378,7 @@
         threads.set(threadId, {
           status: mapTreeStatus(node.status),
           archived: node.archived,
+          deleted: isDeleted(threadId, node, rows),
           order: 0
         });
       }

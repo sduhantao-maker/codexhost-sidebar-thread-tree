@@ -8,6 +8,8 @@
 
 <p align="center"><a href="README.md">English</a> · <b>简体中文</b></p>
 
+<p align="center">⭐ 如果这个项目对你有帮助，请给它一个 Star！⭐</p>
+
 ![展开后的委派树](assets/expanded.png)
 
 把工作委派给其他 Agent 之后，侧栏依旧井然有序。每个子会话都收在发起它的父会话下方，项目再忙，侧栏也只是几棵层次分明的树。即使父会话排得靠后或没有显示出来，整棵树也会聚在一起，不会散落。
@@ -39,6 +41,10 @@
 - **不动 Desktop 的原生行。** 插件从不移动、包裹或复制 Desktop 的行。展开按钮叠在 Agent 图标上，子会话的行放在该行自己的列表项里，隐藏行只通过插件标记完成。关闭插件后，侧栏立即恢复原样。
 - **使用 Desktop 自己的操作。** 插件画出的行会把置顶、重命名和归档交给该会话自己的 Desktop 原生行执行，效果与在原生行上操作完全一样。如果某个会话的原生行还没挂载（比如在「展开显示」之后），等它显示出来后即可使用。
 - **数据留在本机。** 父子关系和实时状态由 codexhost 通过 Desktop 插件接口（`threads.watchTree`、`sidebar.observeRows`）提供。插件本身不发起任何网络请求，只在本机 Desktop 的本地存储里记住哪些树是展开的。
+
+## 反馈
+
+发现问题或有改进想法，欢迎[提交 issue](https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/issues/new)。每一条我都会认真看，并尽快参考修改。
 
 ## 开发
 

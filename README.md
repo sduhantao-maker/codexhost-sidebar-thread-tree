@@ -8,6 +8,8 @@
 
 <p align="center"><b>English</b> · <a href="README.zh-CN.md">简体中文</a></p>
 
+<p align="center">⭐ If Sidebar Thread Tree is useful to you, please give it a star! ⭐</p>
+
 ![Delegated Threads expanded under their parent](assets/expanded.png)
 
 Delegate work to other agents and the sidebar stays in order. Each delegated Thread folds under the Thread that started it, so a busy project reads as a few tidy trees instead of one long list. A tree keeps its members together even when the parent sits further down or is not shown.
@@ -39,6 +41,10 @@ It shares the sidebar badge slot with Sidebar Delegation Badges, so only one of 
 - **Leaves Desktop's rows intact.** The extension never moves, wraps or clones Desktop's rows. It lays its toggle over the agent icon, adds its own rows inside the row's list item, and hides rows only through extension marks. Turn it off and the sidebar is exactly as before.
 - **Uses Desktop's own actions.** A row the extension draws hands pin, rename and archive to the Thread's own Desktop row, so they behave exactly as on that row. A Thread whose Desktop row is not mounted, for example one beyond **Show more**, offers them once its row is shown.
 - **Stays on your machine.** Parent links and live status come from codexhost through the Desktop extension API (`threads.watchTree`, `sidebar.observeRows`). The extension makes no network requests of its own and keeps only which trees are expanded, in this Desktop's local storage.
+
+## Feedback
+
+Found a bug or have an idea? [Open an issue](https://github.com/sduhantao-maker/codexhost-sidebar-thread-tree/issues/new). I read every one and act on it as soon as I can.
 
 ## Develop
 

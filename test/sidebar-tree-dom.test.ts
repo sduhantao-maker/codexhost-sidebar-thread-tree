@@ -602,4 +602,43 @@ describe("sidebar-thread-tree DOM behavior", () => {
     );
     expect(renames).toEqual([nativeTitle]);
   });
+  it("leaves out a delegated Thread that no longer exists, not one that is unread or elsewhere", () => {
+    const harness = createHarness();
+    const list = document.createElement("div");
+    document.body.append(list);
+    const parent = makeListRow(list, "parent", "Parent");
+    const unread = makeListRow(list, "child-unread", "Unread child");
+    harness.setRows([parent.row, unread.row]);
+    harness.setTree({
+      revision: 1,
+      truncated: false,
+      parents: {
+        "child-deleted": "parent",
+        grandchild: "child-deleted",
+        "child-elsewhere": "parent",
+        "child-unread": "parent",
+      },
+      nodes: {
+        parent: makeNode(CODEX, "idle", "Parent"),
+        // Deleted: the Host still lists it, unreadable, with no title and no Desktop row.
+        "child-deleted": { harnessId: CODEX, status: "unknown", archived: false },
+        grandchild: makeNode(CODEX, "idle", "Below the deleted one"),
+        // In another project: no Desktop row in this list, but the Host knows its title.
+        "child-elsewhere": makeNode(PI, "unknown", "Child in another project"),
+        // Not read by the Host yet, but Desktop has its row.
+        "child-unread": { harnessId: CODEX, status: "unknown", archived: false },
+      },
+    });
+
+    const summary = parent.item.querySelector(`[${SIDEBAR_TREE_EXPAND_ATTRIBUTE}="parent"]`);
+    expect(summary?.textContent).toBe("2 child sessions");
+    must(
+      parent.row.element.querySelector<HTMLElement>(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`),
+      "tree toggle",
+    ).click();
+    const shown = [...parent.item.querySelectorAll(`[${SIDEBAR_TREE_NODE_ATTRIBUTE}]`)].map((row) =>
+      row.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE),
+    );
+    expect(shown.sort()).toEqual(["child-elsewhere", "child-unread"]);
+  });
 });
