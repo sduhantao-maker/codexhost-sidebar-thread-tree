@@ -881,18 +881,12 @@
       toggle.setAttribute("aria-label", label);
       toggle.title = label;
     }
-    const icon = trigger.querySelector(AGENT_ICON_SELECTOR);
-    const parentStyle = icon?.parentElement ? ownerDocument.defaultView?.getComputedStyle(icon.parentElement) : void 0;
-    const centredFlexRow = parentStyle !== void 0 && parentStyle.display.includes("flex") && !parentStyle.flexDirection.startsWith("column") && parentStyle.alignItems === "center";
-    const leading = icon !== null && (icon.previousElementSibling === null || icon.previousElementSibling === toggle);
-    if (icon && centredFlexRow && leading) {
+    const icon = trigger.querySelector(AGENT_ICON_SELECTOR) ?? row.querySelector(AGENT_ICON_SELECTOR);
+    if (icon) {
       if (icon.previousElementSibling !== toggle) api.dom.mount(toggle, icon, "before");
-      toggle.style.removeProperty("left");
-      toggle.style.removeProperty("top");
-      if (toggle.getAttribute("style") === "") toggle.removeAttribute("style");
-      return;
+    } else if (trigger.firstElementChild !== toggle) {
+      api.dom.mount(toggle, trigger, "prepend");
     }
-    if (trigger.firstElementChild !== toggle) api.dom.mount(toggle, trigger, "prepend");
     const rowRect = row.getBoundingClientRect();
     if (rowRect.height === 0) return;
     const target = (icon ?? trigger).getBoundingClientRect();
