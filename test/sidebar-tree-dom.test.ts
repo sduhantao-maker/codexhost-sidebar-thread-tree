@@ -422,6 +422,36 @@ describe("sidebar-thread-tree DOM behavior", () => {
     expect(omittedRow.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(false);
   });
 
+  it("places the toggle before an Agent icon that sits outside the title trigger", () => {
+    const harness = createHarness();
+    const list = document.createElement("div");
+    document.body.append(list);
+
+    const parent = makeListRow(list, "parent", "Parent");
+    const child = makeListRow(list, "child-1", "Child");
+    const spacer = document.createElement("div");
+    parent.row.element.insertBefore(spacer, parent.trigger);
+    parent.row.element.insertBefore(parent.icon, parent.trigger);
+
+    harness.setRows([parent.row, child.row]);
+    harness.setTree({
+      revision: 1,
+      truncated: false,
+      parents: { "child-1": "parent" },
+      nodes: {
+        parent: makeNode(CODEX, "idle", "Parent"),
+        "child-1": makeNode(PI, "idle", "Child"),
+      },
+    });
+
+    const toggle = parent.row.element.querySelector(
+      `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
+    );
+    expect(toggle?.previousElementSibling).toBe(spacer);
+    expect(toggle?.nextElementSibling).toBe(parent.icon);
+    expect(parent.icon.nextElementSibling).toBe(parent.trigger);
+  });
+
   it("keeps toggle aligned when the native Agent icon is replaced in place", async () => {
     const harness = createHarness();
     const list = document.createElement("div");

@@ -801,28 +801,15 @@ function placeToggle(
     toggle.setAttribute("aria-label", label);
     toggle.title = label;
   }
-  const icon = trigger.querySelector<HTMLElement>(AGENT_ICON_SELECTOR);
-  const parentStyle = icon?.parentElement
-    ? ownerDocument.defaultView?.getComputedStyle(icon.parentElement)
-    : undefined;
-  const centredFlexRow =
-    parentStyle !== undefined &&
-    parentStyle.display.includes("flex") &&
-    !parentStyle.flexDirection.startsWith("column") &&
-    parentStyle.alignItems === "center";
-  const leading =
-    icon !== null &&
-    (icon.previousElementSibling === null || icon.previousElementSibling === toggle);
-  if (icon && centredFlexRow && leading) {
-    // Out of flow, the first item of a centred flex row sits where the icon starts.
+  const icon =
+    trigger.querySelector<HTMLElement>(AGENT_ICON_SELECTOR) ??
+    row.querySelector<HTMLElement>(AGENT_ICON_SELECTOR);
+  // Position against the row's coordinate system so Desktop layout changes cannot shift it.
+  if (icon) {
     if (icon.previousElementSibling !== toggle) api.dom.mount(toggle, icon, "before");
-    toggle.style.removeProperty("left");
-    toggle.style.removeProperty("top");
-    if (toggle.getAttribute("style") === "") toggle.removeAttribute("style");
-    return;
+  } else if (trigger.firstElementChild !== toggle) {
+    api.dom.mount(toggle, trigger, "prepend");
   }
-  // Otherwise the row, which Desktop positions, places it over the icon or the title start.
-  if (trigger.firstElementChild !== toggle) api.dom.mount(toggle, trigger, "prepend");
   const rowRect = row.getBoundingClientRect();
   if (rowRect.height === 0) return;
   const target = (icon ?? trigger).getBoundingClientRect();

@@ -74,6 +74,8 @@ button.cxh-tree-identity:is(:focus-visible, [aria-expanded="true"]) > :not(.cxh-
  */
 .cxh-tree-toggle {
   all: unset;
+  /* Desktop's native row is pointer-events:none; all:unset would inherit that and block clicks. */
+  pointer-events: auto;
   box-sizing: border-box;
   position: absolute;
   z-index: 1;
