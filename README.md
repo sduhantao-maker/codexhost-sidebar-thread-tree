@@ -46,7 +46,7 @@ npm run check     # type check, tests and build
 npm run package   # dist/sidebar-thread-tree.zip
 ```
 
-`desktop.js` and `desktop.css` are built from `src/` with the esbuild settings of codexhost's own `tools/build-desktop-extension.mjs`, and committed so codexhost can install straight from the repository. CI checks that they match the source.
+`desktop.js` and `desktop.css` are built from `src/` with the esbuild settings of codexhost's own `tools/build-desktop-extension.mjs`, and committed so codexhost can install straight from the repository. CI checks that they match the source. Before opening a pull request, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 To release, raise `version` in `manifest.json`, run `npm run package`, and publish a release with the package and every image the manifest names:
 

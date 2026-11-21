@@ -46,7 +46,7 @@ npm run check     # 类型检查、测试和构建
 npm run package   # 生成 dist/sidebar-thread-tree.zip
 ```
 
-`desktop.js` 和 `desktop.css` 由 `src/` 构建，esbuild 设置与 codexhost 自己的 `tools/build-desktop-extension.mjs` 相同。构建结果提交在仓库里，codexhost 可以直接从仓库安装；CI 会检查它们与源码一致。
+`desktop.js` 和 `desktop.css` 由 `src/` 构建，esbuild 设置与 codexhost 自己的 `tools/build-desktop-extension.mjs` 相同。构建结果提交在仓库里，codexhost 可以直接从仓库安装；CI 会检查它们与源码一致。提交 PR 前请先阅读 [CONTRIBUTING.md](CONTRIBUTING.md#参与贡献)。
 
 发布新版本时，先提高 `manifest.json` 里的 `version`，运行 `npm run package`，再把安装包和 manifest 里列出的每张图片一起发布到 Release：
 
