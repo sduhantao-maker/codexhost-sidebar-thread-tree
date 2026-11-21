@@ -5,7 +5,7 @@
     "en": "Sidebar Thread Tree",
     "zh-CN": "侧栏委派树"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "desktopApi": 1,
   "description": {
     "en": "Folds delegated Threads under their parent in the sidebar, with live status at a glance.",
