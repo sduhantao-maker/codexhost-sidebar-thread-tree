@@ -274,6 +274,60 @@ button.cxh-tree-identity {
     var(--color-text-tertiary, color-mix(in srgb, currentColor 60%, transparent));
 }
 
+/*
+ * Desktop's own row actions (pin, archive) on a codexhost row: shown on hover or focus as on a
+ * native row, in place of the status, with the native buttons' size and icons.
+ */
+.cxh-tree-actions {
+  display: none;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+  margin-inline-start: var(--cxh-title-gap, 8px);
+}
+
+.cxh-tree-row:is(:hover, :focus-within) > .cxh-tree-actions {
+  display: inline-flex;
+}
+
+.cxh-tree-row:is(:hover, :focus-within):has(> .cxh-tree-actions) > .cxh-tree-status {
+  display: none;
+}
+
+.cxh-tree-action {
+  all: unset;
+  /* The native row is pointer-events:none; all:unset would inherit that. */
+  pointer-events: auto;
+  box-sizing: border-box;
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  color: var(--color-text-secondary, color-mix(in srgb, currentColor 73%, transparent));
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.cxh-tree-action:hover {
+  color: var(--color-text-primary, currentColor);
+  background: var(
+    --color-background-secondary-ghost-hover,
+    color-mix(in srgb, currentColor 10%, transparent)
+  );
+}
+
+.cxh-tree-action:focus-visible {
+  outline: 2px solid var(--color-ring, Highlight);
+  outline-offset: 1px;
+}
+
+.cxh-tree-action > svg {
+  width: 16px;
+  height: 16px;
+}
+
 /* Rounded elbow guides, ported from the Web sidebar tree. */
 .cxh-tree-branch {
   position: relative;

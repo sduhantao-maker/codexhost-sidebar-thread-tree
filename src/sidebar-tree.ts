@@ -291,9 +291,14 @@ export function activate(
     }
   };
 
+  /** Each Thread's mounted Desktop rows, as of the latest pass. */
+  let nativeRows = new Map<string, HTMLElement[]>();
+  const nativeRow = (threadId: string): HTMLElement | null =>
+    nativeRows.get(threadId)?.find((element) => element.isConnected) ?? null;
+
   // A row press only opens: on the Web it also folds the open Thread, but on Desktop the first
   // press of a double-click on the open row's title is the start of a rename.
-  const handlers: SidebarThreadTreeHandlers = { toggle, open: navigate };
+  const handlers: SidebarThreadTreeHandlers = { toggle, open: navigate, native: nativeRow };
 
   const apply = (): void => {
     cancelScheduledApply();
@@ -303,6 +308,7 @@ export function activate(
     const nodes: Readonly<Record<string, ThreadTreeNode>> = snapshot.nodes;
     const { mounted, sharedItems } = localMountedRows();
     const rows = byThread(mounted);
+    nativeRows = rows;
     const sampledIcons = collectSampledIcons(observedRows);
 
     const current = openThreadId(rows);

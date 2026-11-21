@@ -9,6 +9,8 @@ import {
   type ThreadTreeSnapshot,
 } from "@codexhost/shared-contracts";
 import {
+  SIDEBAR_TREE_ACTION_ATTRIBUTE,
+  SIDEBAR_TREE_ACTIONS_CLASS,
   SIDEBAR_TREE_CHILDREN_ATTRIBUTE,
   SIDEBAR_TREE_EXPAND_ATTRIBUTE,
   SIDEBAR_TREE_NODE_ATTRIBUTE,
@@ -485,5 +487,119 @@ describe("sidebar-thread-tree DOM behavior", () => {
     );
     expect(updatedToggle).not.toBeNull();
     expect(updatedToggle?.nextElementSibling).toBe(replacement);
+  });
+  /** A parent with one delegated child, expanded so the child is a row codexhost draws. */
+  function expandedChild(options: { childMounted?: boolean; childActive?: boolean } = {}) {
+    const harness = createHarness();
+    const list = document.createElement("div");
+    document.body.append(list);
+    const parent = makeListRow(list, "parent", "Parent");
+    const child = makeListRow(list, "child-1", "Child");
+    const pressed: string[] = [];
+    const holder = document.createElement("div");
+    for (const label of ["Pin chat", "Archive chat"]) {
+      const button = document.createElement("button");
+      button.setAttribute("aria-label", label);
+      button.innerHTML = '<svg viewBox="0 0 16 16"><path d="M2 2h12"/></svg>';
+      button.addEventListener("click", () => pressed.push(label));
+      holder.append(button);
+    }
+    const main = document.createElement("button");
+    main.setAttribute("data-interactive-row-button", "");
+    main.setAttribute("aria-label", "Child");
+    main.innerHTML = '<svg viewBox="0 0 16 16"></svg>';
+    child.row.element.append(main, holder);
+    if (options.childActive)
+      child.row.element.setAttribute("data-app-action-sidebar-thread-active", "true");
+    harness.setRows(options.childMounted === false ? [parent.row] : [parent.row, child.row]);
+    harness.setTree({
+      revision: 1,
+      truncated: false,
+      parents: { "child-1": "parent" },
+      nodes: {
+        parent: makeNode(CODEX, "idle", "Parent"),
+        "child-1": makeNode(PI, "running", "Child"),
+      },
+    });
+    if (!options.childActive)
+      must(
+        parent.row.element.querySelector<HTMLElement>(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`),
+        "tree toggle",
+      ).click();
+    const drawn = must(
+      parent.item.querySelector<HTMLElement>(`[${SIDEBAR_TREE_NODE_ATTRIBUTE}="child-1"]`),
+      "drawn child row",
+    );
+    return { harness, parent, child, drawn, pressed };
+  }
+
+  it("offers a drawn row its Thread's own pin and archive, pressing Desktop's buttons", () => {
+    const { harness, drawn, pressed } = expandedChild();
+    expect(drawn.querySelector(`.${SIDEBAR_TREE_ACTIONS_CLASS}`)).toBeNull();
+
+    drawn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    const mirrored = [
+      ...drawn.querySelectorAll<HTMLButtonElement>(`[${SIDEBAR_TREE_ACTION_ATTRIBUTE}]`),
+    ];
+    expect(mirrored.map((button) => button.getAttribute("aria-label"))).toEqual([
+      "Pin chat",
+      "Archive chat",
+    ]);
+    expect(mirrored.every((button) => button.querySelector("svg") !== null)).toBe(true);
+
+    must(mirrored[1], "archive").click();
+    expect(pressed).toEqual(["Archive chat"]);
+    expect(harness.openThread).not.toHaveBeenCalled();
+  });
+
+  it("opens Desktop's own menu of the drawn row's Thread, at the pointer", () => {
+    const { parent, child, drawn } = expandedChild();
+    const menus: { target: EventTarget | null; x: number; y: number }[] = [];
+    child.row.element.addEventListener("contextmenu", (event) =>
+      menus.push({ target: event.target, x: event.clientX, y: event.clientY }),
+    );
+    const elsewhere: string[] = [];
+    parent.row.element.addEventListener("contextmenu", () => elsewhere.push("parent row"));
+    parent.item.addEventListener("contextmenu", () => elsewhere.push("parent item"));
+
+    const press = new MouseEvent("contextmenu", {
+      bubbles: true,
+      cancelable: true,
+      clientX: 120,
+      clientY: 340,
+      button: 2,
+    });
+    must(drawn.querySelector(".cxh-tree-title"), "drawn title").dispatchEvent(press);
+
+    expect(press.defaultPrevented).toBe(true);
+    expect(menus).toEqual([{ target: child.row.element, x: 120, y: 340 }]);
+    expect(elsewhere).toEqual([]);
+  });
+
+  it("offers nothing for a Thread whose Desktop row is not mounted", () => {
+    const { drawn } = expandedChild({ childMounted: false });
+    drawn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(drawn.querySelector(`.${SIDEBAR_TREE_ACTIONS_CLASS}`)).toBeNull();
+    const press = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+    drawn.dispatchEvent(press);
+    expect(press.defaultPrevented).toBe(true);
+  });
+
+  it("renames the open Thread on a title double-click, as its Desktop row does", () => {
+    const { child, drawn } = expandedChild({ childActive: true });
+    expect(drawn.getAttribute("aria-current")).toBe("page");
+    const renames: EventTarget[] = [];
+    const nativeTitle = must(
+      child.row.element.querySelector("[data-thread-title]"),
+      "native title",
+    );
+    child.row.element.addEventListener("dblclick", (event) => {
+      if (event.target) renames.push(event.target);
+    });
+
+    must(drawn.querySelector(".cxh-tree-title"), "drawn title").dispatchEvent(
+      new MouseEvent("dblclick", { bubbles: true, cancelable: true, detail: 2 }),
+    );
+    expect(renames).toEqual([nativeTitle]);
   });
 });

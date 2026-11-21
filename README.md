@@ -14,8 +14,9 @@ Delegate work to other agents and the sidebar stays in order. Each delegated Thr
 
 - **Progress at a glance.** A collapsed parent keeps one summary line, such as "5 child sessions · 2 running · 1 needs approval".
 - **Expand in place.** Hover a parent's agent icon and it turns into an arrow. Select it, or the summary line, and nested delegations unfold level by level along rounded guides.
+- **Connected across projects.** A child started in another project still hangs under its parent, and its own project shows that parent above it, so you always see where it belongs.
 - **See what needs you.** Every child row shows its agent, title and live status, so running work and Threads waiting for you stand out.
-- **One click away.** Select any row to open it through Desktop's own navigation. Opening a Thread expands its parents, and Desktop's next and previous Thread shortcuts follow the tree.
+- **Works like a native row.** Select any row to open it. Every row, parents and children alike, offers Desktop's own pin, rename and archive from its hover buttons and right-click menu. Opening a Thread expands its parents, and Desktop's next and previous Thread shortcuts follow the tree.
 - **Native look and feel.** Rows take their size, fonts and colors from Desktop's sidebar, in light and dark themes. Motion follows Desktop's own curve and is skipped under Reduce Motion.
 
 | Collapsed | Hover | Dark |
@@ -34,8 +35,9 @@ It shares the sidebar badge slot with Sidebar Delegation Badges, so only one of 
 
 ## How it behaves
 
-- **Display only.** Thread ownership, execution, titles, pinning, archiving and Desktop's order stay as they are, and rows from remote Hosts are left alone.
+- **Never changes a Thread on its own.** Ownership, execution, titles, pinning, archiving and Desktop's order stay with you and Desktop, and rows from remote Hosts are left alone.
 - **Leaves Desktop's rows intact.** The extension never moves, wraps or clones Desktop's rows. It lays its toggle over the agent icon, adds its own rows inside the row's list item, and hides rows only through extension marks. Turn it off and the sidebar is exactly as before.
+- **Uses Desktop's own actions.** A row the extension draws hands pin, rename and archive to the Thread's own Desktop row, so they behave exactly as on that row. A Thread whose Desktop row is not mounted, for example one beyond **Show more**, offers them once its row is shown.
 - **Stays on your machine.** Parent links and live status come from codexhost through the Desktop extension API (`threads.watchTree`, `sidebar.observeRows`). The extension makes no network requests of its own and keeps only which trees are expanded, in this Desktop's local storage.
 
 ## Develop

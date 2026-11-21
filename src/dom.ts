@@ -31,6 +31,8 @@ export const SIDEBAR_TREE_IDENTITY_CLASS = "cxh-tree-identity";
 export const SIDEBAR_TREE_TITLE_CLASS = "cxh-tree-title";
 export const SIDEBAR_TREE_STATUS_CLASS = "cxh-tree-status";
 export const SIDEBAR_TREE_VIRTUAL_CLASS = "cxh-tree-virtual";
+export const SIDEBAR_TREE_ACTIONS_CLASS = "cxh-tree-actions";
+export const SIDEBAR_TREE_ACTION_CLASS = "cxh-tree-action";
 
 /** Each level indents children by the Web tree's 24px. */
 export const SIDEBAR_TREE_INDENT_PX = 24;
@@ -43,6 +45,8 @@ export const SIDEBAR_TREE_SUMMARY_ATTRIBUTE = "data-codexhost-sidebar-tree-summa
 export const SIDEBAR_TREE_CHILDREN_ATTRIBUTE = "data-codexhost-sidebar-tree-children";
 export const SIDEBAR_TREE_VIRTUAL_ATTRIBUTE = "data-codexhost-sidebar-tree-virtual";
 export const SIDEBAR_TREE_NODE_ATTRIBUTE = "data-codexhost-sidebar-tree-node";
+/** A button on a codexhost row that stands in for one of Desktop's own row actions. */
+export const SIDEBAR_TREE_ACTION_ATTRIBUTE = "data-codexhost-sidebar-tree-action";
 /** Identity of codexhost rows across rebuilds, for focus and for expand and collapse motion. */
 export const SIDEBAR_TREE_KEY_ATTRIBUTE = "data-codexhost-sidebar-tree-key";
 /** Every node this module adds carries one of these, so observers can ignore its own writes. */
@@ -61,6 +65,9 @@ export type SidebarTreeMarkName = "hidden" | "root-collapsed" | "root-expanded" 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
 const PRESENTATION_ATTRIBUTE = "data-codexhost-sidebar-tree-presentation";
 const NATIVE_ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
+/** Desktop's own buttons on a row (pin, archive), not the row's main button. */
+const NATIVE_ACTION_SELECTOR = "button[aria-label]:not([data-interactive-row-button])";
+const NATIVE_TITLE_SELECTOR = "[data-thread-title]";
 const AGENT_ICON_SELECTOR = "[data-codexhost-sidebar-agent-icon]";
 const ACTIVE_ATTRIBUTE = "data-app-action-sidebar-thread-active";
 const SELECTED_ATTRIBUTE = "data-app-action-sidebar-thread-selected";
@@ -109,6 +116,11 @@ export interface SidebarThreadTreeHandlers {
   toggle(threadId: string, source: Element): void;
   /** A press on a Thread's row or on the rest of its row block. */
   open(threadId: string, source: Element): void;
+  /**
+   * The Thread's own Desktop row when Desktop has it mounted, even hidden. Rows codexhost draws
+   * hand Desktop's row actions (pin, rename, archive) to it, so they act as Desktop's own do.
+   */
+  native(threadId: string): HTMLElement | null;
 }
 
 interface TreeMetrics {
@@ -149,6 +161,7 @@ const currentHandlers = new WeakMap<Element, SidebarThreadTreeHandlers>();
  * Events on codexhost controls and rows that must not reach Desktop: its rows navigate on
  * press, and the row, its listitem and the list carry drag, rename and context-menu handling.
  * The ends of gestures (`pointerup`, `mouseup`) pass, so a drag started elsewhere can end here.
+ * Context menus and title double-clicks are replayed on the Thread's own row instead.
  */
 const ISOLATED_EVENTS = [
   "pointerdown",
@@ -188,6 +201,86 @@ function ownedChild(parent: Element, attribute: string): HTMLElement | null {
     if (child.hasAttribute(attribute)) return child as HTMLElement;
   }
   return null;
+}
+
+/** Desktop's own action buttons on a native row (pin, archive), in Desktop's order. */
+function nativeActions(native: HTMLElement): HTMLButtonElement[] {
+  return [...native.querySelectorAll<HTMLButtonElement>(NATIVE_ACTION_SELECTOR)].filter(
+    (button) =>
+      button.querySelector("svg") !== null && !button.closest(SIDEBAR_TREE_OWNED_SELECTOR),
+  );
+}
+
+/**
+ * Shows Desktop's own row actions on a row codexhost draws: each button mirrors one of the
+ * Thread's native row, with its label and icon, so the row offers what a native row offers.
+ */
+function syncActions(row: HTMLElement, native: HTMLElement | null): void {
+  const actions = native ? nativeActions(native) : [];
+  let box = row.querySelector<HTMLElement>(`:scope > .${SIDEBAR_TREE_ACTIONS_CLASS}`);
+  if (actions.length === 0) {
+    box?.remove();
+    return;
+  }
+  const labels = actions.map((action) => action.getAttribute("aria-label") ?? "");
+  const signature = labels.join("\u0000");
+  if (box?.dataset.signature === signature) return;
+  const ownerDocument = row.ownerDocument;
+  if (!box) {
+    box = ownerDocument.createElement("span");
+    box.className = SIDEBAR_TREE_ACTIONS_CLASS;
+    row.append(box);
+  }
+  box.dataset.signature = signature;
+  box.replaceChildren(
+    ...actions.map((action, index) => {
+      const label = labels[index] ?? "";
+      const button = ownerDocument.createElement("button");
+      button.type = "button";
+      button.className = SIDEBAR_TREE_ACTION_CLASS;
+      button.setAttribute(SIDEBAR_TREE_ACTION_ATTRIBUTE, label);
+      button.setAttribute("aria-label", label);
+      button.title = label;
+      const icon = action.querySelector("svg")?.cloneNode(true) as Element | undefined;
+      if (icon) {
+        icon.setAttribute("aria-hidden", "true");
+        button.append(icon);
+      }
+      return button;
+    }),
+  );
+}
+
+/** Presses the native action a mirrored button stands for, looked up again at press time. */
+function pressNativeAction(native: HTMLElement | null, label: string): void {
+  if (!native) return;
+  nativeActions(native)
+    .find((action) => action.getAttribute("aria-label") === label)
+    ?.click();
+}
+
+/** Replays a gesture on the Thread's own Desktop row, which handles it as one of its own. */
+function replay(target: Element, type: "contextmenu" | "dblclick", from: MouseEvent): void {
+  const view = target.ownerDocument.defaultView;
+  if (!view) return;
+  target.dispatchEvent(
+    new view.MouseEvent(type, {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      detail: from.detail,
+      screenX: from.screenX,
+      screenY: from.screenY,
+      clientX: from.clientX,
+      clientY: from.clientY,
+      button: from.button,
+      buttons: from.buttons,
+      ctrlKey: from.ctrlKey,
+      shiftKey: from.shiftKey,
+      altKey: from.altKey,
+      metaKey: from.metaKey,
+    }),
+  );
 }
 
 function nativeParts(row: HTMLElement): { trigger: HTMLElement; item: HTMLElement } | null {
@@ -644,12 +737,75 @@ function focusToggleOf(scope: Element | null, threadId: string): void {
 /** Delegated handling for everything codexhost draws inside one container. */
 function wireContainer(container: HTMLElement, signal: AbortSignal): void {
   isolate(container, signal);
+  const rowOf = (target: EventTarget | null) => {
+    const row =
+      closestAttribute(target, SIDEBAR_TREE_NODE_ATTRIBUTE) ??
+      closestAttribute(target, SIDEBAR_TREE_SUMMARY_ATTRIBUTE);
+    const threadId =
+      row?.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE) ??
+      row?.getAttribute(SIDEBAR_TREE_SUMMARY_ATTRIBUTE);
+    return row && threadId ? { row, threadId } : null;
+  };
+  // Desktop's own row actions come from the Thread's native row whenever the pointer or focus
+  // reaches a codexhost row, so they always match what Desktop offers for that Thread.
+  const offerActions = (event: Event): void => {
+    const found = rowOf(event.target);
+    if (!found || !found.row.hasAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE)) return;
+    syncActions(found.row, currentHandlers.get(container)?.native(found.threadId) ?? null);
+  };
+  container.addEventListener("mouseover", offerActions, { signal });
+  container.addEventListener("focusin", offerActions, { signal });
+  // A secondary press opens Desktop's own menu for that Thread (pin, rename, archive). Desktop
+  // places the menu at the pointer, so it opens where the press happened.
+  container.addEventListener(
+    "contextmenu",
+    (event) => {
+      event.preventDefault();
+      const found = rowOf(event.target);
+      const native = found ? currentHandlers.get(container)?.native(found.threadId) : null;
+      if (native) replay(native, "contextmenu", event);
+    },
+    { signal },
+  );
+  // Double-clicking the open Thread's title renames it, as on a native row.
+  container.addEventListener(
+    "dblclick",
+    (event) => {
+      if (
+        closestAttribute(event.target, SIDEBAR_TREE_TOGGLE_ATTRIBUTE) ||
+        closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE)
+      )
+        return;
+      const row = closestAttribute(event.target, SIDEBAR_TREE_NODE_ATTRIBUTE);
+      const threadId = row?.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE);
+      if (!row || !threadId || row.getAttribute("aria-current") !== "page") return;
+      const title = currentHandlers
+        .get(container)
+        ?.native(threadId)
+        ?.querySelector(NATIVE_TITLE_SELECTOR);
+      if (title) replay(title, "dblclick", event);
+    },
+    { signal },
+  );
   container.addEventListener(
     "click",
     (event) => {
       const handlers = currentHandlers.get(container);
       event.stopPropagation();
       if (!handlers) return;
+      const action = closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE);
+      if (action) {
+        event.preventDefault();
+        const threadId = closestAttribute(action, SIDEBAR_TREE_NODE_ATTRIBUTE)?.getAttribute(
+          SIDEBAR_TREE_NODE_ATTRIBUTE,
+        );
+        if (threadId)
+          pressNativeAction(
+            handlers.native(threadId),
+            action.getAttribute(SIDEBAR_TREE_ACTION_ATTRIBUTE) ?? "",
+          );
+        return;
+      }
       const toggle = closestAttribute(event.target, SIDEBAR_TREE_TOGGLE_ATTRIBUTE);
       if (toggle) {
         event.preventDefault();

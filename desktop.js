@@ -354,6 +354,8 @@
   var SIDEBAR_TREE_TITLE_CLASS = "cxh-tree-title";
   var SIDEBAR_TREE_STATUS_CLASS = "cxh-tree-status";
   var SIDEBAR_TREE_VIRTUAL_CLASS = "cxh-tree-virtual";
+  var SIDEBAR_TREE_ACTIONS_CLASS = "cxh-tree-actions";
+  var SIDEBAR_TREE_ACTION_CLASS = "cxh-tree-action";
   var SIDEBAR_TREE_INDENT_PX = 24;
   var SIDEBAR_TREE_ICON_PX = 14;
   var SIDEBAR_TREE_TOGGLE_ATTRIBUTE = "data-codexhost-sidebar-tree-toggle";
@@ -362,6 +364,7 @@
   var SIDEBAR_TREE_CHILDREN_ATTRIBUTE = "data-codexhost-sidebar-tree-children";
   var SIDEBAR_TREE_VIRTUAL_ATTRIBUTE = "data-codexhost-sidebar-tree-virtual";
   var SIDEBAR_TREE_NODE_ATTRIBUTE = "data-codexhost-sidebar-tree-node";
+  var SIDEBAR_TREE_ACTION_ATTRIBUTE = "data-codexhost-sidebar-tree-action";
   var SIDEBAR_TREE_KEY_ATTRIBUTE = "data-codexhost-sidebar-tree-key";
   var SIDEBAR_TREE_OWNED_SELECTOR = [
     SIDEBAR_TREE_TOGGLE_ATTRIBUTE,
@@ -373,6 +376,8 @@
   var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   var PRESENTATION_ATTRIBUTE = "data-codexhost-sidebar-tree-presentation";
   var NATIVE_ROW_SELECTOR = "[data-app-action-sidebar-thread-row]";
+  var NATIVE_ACTION_SELECTOR = "button[aria-label]:not([data-interactive-row-button])";
+  var NATIVE_TITLE_SELECTOR = "[data-thread-title]";
   var AGENT_ICON_SELECTOR = "[data-codexhost-sidebar-agent-icon]";
   var ACTIVE_ATTRIBUTE = "data-app-action-sidebar-thread-active";
   var SELECTED_ATTRIBUTE = "data-app-action-sidebar-thread-selected";
@@ -423,6 +428,72 @@
       if (child.hasAttribute(attribute)) return child;
     }
     return null;
+  }
+  function nativeActions(native) {
+    return [...native.querySelectorAll(NATIVE_ACTION_SELECTOR)].filter(
+      (button) => button.querySelector("svg") !== null && !button.closest(SIDEBAR_TREE_OWNED_SELECTOR)
+    );
+  }
+  function syncActions(row, native) {
+    const actions = native ? nativeActions(native) : [];
+    let box = row.querySelector(`:scope > .${SIDEBAR_TREE_ACTIONS_CLASS}`);
+    if (actions.length === 0) {
+      box?.remove();
+      return;
+    }
+    const labels = actions.map((action) => action.getAttribute("aria-label") ?? "");
+    const signature = labels.join("\0");
+    if (box?.dataset.signature === signature) return;
+    const ownerDocument = row.ownerDocument;
+    if (!box) {
+      box = ownerDocument.createElement("span");
+      box.className = SIDEBAR_TREE_ACTIONS_CLASS;
+      row.append(box);
+    }
+    box.dataset.signature = signature;
+    box.replaceChildren(
+      ...actions.map((action, index) => {
+        const label = labels[index] ?? "";
+        const button = ownerDocument.createElement("button");
+        button.type = "button";
+        button.className = SIDEBAR_TREE_ACTION_CLASS;
+        button.setAttribute(SIDEBAR_TREE_ACTION_ATTRIBUTE, label);
+        button.setAttribute("aria-label", label);
+        button.title = label;
+        const icon = action.querySelector("svg")?.cloneNode(true);
+        if (icon) {
+          icon.setAttribute("aria-hidden", "true");
+          button.append(icon);
+        }
+        return button;
+      })
+    );
+  }
+  function pressNativeAction(native, label) {
+    if (!native) return;
+    nativeActions(native).find((action) => action.getAttribute("aria-label") === label)?.click();
+  }
+  function replay(target, type, from) {
+    const view = target.ownerDocument.defaultView;
+    if (!view) return;
+    target.dispatchEvent(
+      new view.MouseEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        detail: from.detail,
+        screenX: from.screenX,
+        screenY: from.screenY,
+        clientX: from.clientX,
+        clientY: from.clientY,
+        button: from.button,
+        buttons: from.buttons,
+        ctrlKey: from.ctrlKey,
+        shiftKey: from.shiftKey,
+        altKey: from.altKey,
+        metaKey: from.metaKey
+      })
+    );
   }
   function nativeParts(row) {
     const trigger = row.querySelector("[data-thread-title-trigger]");
@@ -758,12 +829,60 @@
   }
   function wireContainer(container, signal) {
     isolate(container, signal);
+    const rowOf = (target) => {
+      const row = closestAttribute(target, SIDEBAR_TREE_NODE_ATTRIBUTE) ?? closestAttribute(target, SIDEBAR_TREE_SUMMARY_ATTRIBUTE);
+      const threadId = row?.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE) ?? row?.getAttribute(SIDEBAR_TREE_SUMMARY_ATTRIBUTE);
+      return row && threadId ? { row, threadId } : null;
+    };
+    const offerActions = (event) => {
+      const found = rowOf(event.target);
+      if (!found || !found.row.hasAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE)) return;
+      syncActions(found.row, currentHandlers.get(container)?.native(found.threadId) ?? null);
+    };
+    container.addEventListener("mouseover", offerActions, { signal });
+    container.addEventListener("focusin", offerActions, { signal });
+    container.addEventListener(
+      "contextmenu",
+      (event) => {
+        event.preventDefault();
+        const found = rowOf(event.target);
+        const native = found ? currentHandlers.get(container)?.native(found.threadId) : null;
+        if (native) replay(native, "contextmenu", event);
+      },
+      { signal }
+    );
+    container.addEventListener(
+      "dblclick",
+      (event) => {
+        if (closestAttribute(event.target, SIDEBAR_TREE_TOGGLE_ATTRIBUTE) || closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE))
+          return;
+        const row = closestAttribute(event.target, SIDEBAR_TREE_NODE_ATTRIBUTE);
+        const threadId = row?.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE);
+        if (!row || !threadId || row.getAttribute("aria-current") !== "page") return;
+        const title = currentHandlers.get(container)?.native(threadId)?.querySelector(NATIVE_TITLE_SELECTOR);
+        if (title) replay(title, "dblclick", event);
+      },
+      { signal }
+    );
     container.addEventListener(
       "click",
       (event) => {
         const handlers = currentHandlers.get(container);
         event.stopPropagation();
         if (!handlers) return;
+        const action = closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE);
+        if (action) {
+          event.preventDefault();
+          const threadId2 = closestAttribute(action, SIDEBAR_TREE_NODE_ATTRIBUTE)?.getAttribute(
+            SIDEBAR_TREE_NODE_ATTRIBUTE
+          );
+          if (threadId2)
+            pressNativeAction(
+              handlers.native(threadId2),
+              action.getAttribute(SIDEBAR_TREE_ACTION_ATTRIBUTE) ?? ""
+            );
+          return;
+        }
         const toggle = closestAttribute(event.target, SIDEBAR_TREE_TOGGLE_ATTRIBUTE);
         if (toggle) {
           event.preventDefault();
@@ -1212,7 +1331,9 @@
         );
       }
     };
-    const handlers = { toggle, open: navigate };
+    let nativeRows = /* @__PURE__ */ new Map();
+    const nativeRow = (threadId) => nativeRows.get(threadId)?.find((element) => element.isConnected) ?? null;
+    const handlers = { toggle, open: navigate, native: nativeRow };
     const apply = () => {
       cancelScheduledApply();
       if (disposed || api.signal.aborted || !snapshot) return;
@@ -1220,6 +1341,7 @@
       const nodes = snapshot.nodes;
       const { mounted, sharedItems } = localMountedRows();
       const rows = byThread(mounted);
+      nativeRows = rows;
       const sampledIcons = collectSampledIcons(observedRows);
       const current = openThreadId(rows);
       if (current === null || !Object.hasOwn(parents, current)) expandedForThreadId = null;
