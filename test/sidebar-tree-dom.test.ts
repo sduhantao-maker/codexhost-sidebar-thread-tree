@@ -13,6 +13,7 @@ import {
   SIDEBAR_TREE_ACTIONS_CLASS,
   SIDEBAR_TREE_CHILDREN_ATTRIBUTE,
   SIDEBAR_TREE_EXPAND_ATTRIBUTE,
+  SIDEBAR_TREE_MENU_ATTRIBUTE,
   SIDEBAR_TREE_NODE_ATTRIBUTE,
   SIDEBAR_TREE_SUMMARY_ATTRIBUTE,
   SIDEBAR_TREE_TOGGLE_ATTRIBUTE,
@@ -48,7 +49,7 @@ function createHarness(options: SidebarThreadTreeOptions = {}) {
   const marks = new Map<Element, Set<string>>();
   let onRows: ((rows: readonly DesktopSidebarRow[]) => void) | undefined;
   let onTree: ((snapshot: ThreadTreeSnapshot) => void) | undefined;
-  const openThread = vi.fn(async () => undefined);
+  const openThread = vi.fn(async (_threadId: string): Promise<void> => undefined);
 
   const api: DesktopExtensionApiV1 = {
     id: "sidebar-thread-tree",
@@ -576,13 +577,117 @@ describe("sidebar-thread-tree DOM behavior", () => {
     expect(elsewhere).toEqual([]);
   });
 
-  it("offers nothing for a Thread whose Desktop row is not mounted", () => {
-    const { drawn } = expandedChild({ childMounted: false });
+  /**
+   * Desktop's main view: the Composer names the open Thread, and the header toolbar has the
+   * button that opens that Thread's own menu.
+   */
+  function mainView(openThreadId: string) {
+    const composer = document.createElement("div");
+    composer.setAttribute("data-above-composer-conversation-id", openThreadId);
+    const toolbar = document.createElement("div");
+    toolbar.setAttribute("data-app-shell-header-toolbar", "true");
+    const trigger = document.createElement("button");
+    trigger.setAttribute("aria-label", "Chat actions");
+    trigger.setAttribute("aria-haspopup", "menu");
+    trigger.setAttribute("aria-expanded", "false");
+    toolbar.append(trigger);
+    document.body.append(toolbar, composer);
+    const keys: { key: string; openThread: string | null }[] = [];
+    trigger.addEventListener("keydown", (event) =>
+      keys.push({
+        key: event.key,
+        openThread: composer.getAttribute("data-above-composer-conversation-id"),
+      }),
+    );
+    return { composer, trigger, keys };
+  }
+
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 250));
+
+  it("offers Desktop's own menu for a Thread whose Desktop row is not mounted", async () => {
+    const { harness, drawn } = expandedChild({ childMounted: false });
+    const view = mainView("parent");
+    harness.openThread.mockImplementation(async (threadId) => {
+      view.composer.setAttribute("data-above-composer-conversation-id", threadId);
+    });
+
     drawn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-    expect(drawn.querySelector(`.${SIDEBAR_TREE_ACTIONS_CLASS}`)).toBeNull();
-    const press = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
-    drawn.dispatchEvent(press);
+    const buttons = [...drawn.querySelectorAll<HTMLButtonElement>(`.${SIDEBAR_TREE_ACTIONS_CLASS} button`)];
+    expect(buttons).toHaveLength(1);
+    const menu = must(buttons[0], "menu button");
+    expect(menu.hasAttribute(SIDEBAR_TREE_MENU_ATTRIBUTE)).toBe(true);
+    expect(menu.getAttribute("aria-label")).toBe("Chat actions");
+    expect(menu.querySelector("svg")).not.toBeNull();
+
+    menu.click();
+    expect(harness.openThread).toHaveBeenCalledWith("child-1");
+    await settle();
+    // The menu opens only once the main view shows the Thread it is for.
+    expect(view.keys).toEqual([{ key: "ArrowDown", openThread: "child-1" }]);
+    expect(document.activeElement).toBe(view.trigger);
+  });
+
+  it("opens Desktop's own menu on a right-click of a Thread without a Desktop row", async () => {
+    const { harness, drawn } = expandedChild({ childMounted: false });
+    const view = mainView("child-1");
+
+    const press = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2 });
+    must(drawn.querySelector(".cxh-tree-title"), "drawn title").dispatchEvent(press);
     expect(press.defaultPrevented).toBe(true);
+    await settle();
+    // The Thread is already open, so it is not opened again.
+    expect(harness.openThread).not.toHaveBeenCalled();
+    expect(view.keys).toEqual([{ key: "ArrowDown", openThread: "child-1" }]);
+  });
+
+  it("finds the open Thread by its Composer's place when Desktop hides the empty portal", async () => {
+    const { harness, drawn, parent } = expandedChild({ childMounted: false });
+    // Desktop keeps the Composer of an earlier view, hidden further up, next to the open one.
+    const earlier = mainView("parent");
+    earlier.trigger.closest("[data-app-shell-header-toolbar]")?.remove();
+    const shownView = mainView("child-1");
+    const place = document.createElement("div");
+    shownView.composer.replaceWith(place);
+    place.append(shownView.composer);
+    Object.defineProperty(place, "getClientRects", { value: () => [new DOMRect(0, 0, 600, 40)] });
+
+    drawn.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(harness.openThread).not.toHaveBeenCalled();
+    expect(shownView.keys).toEqual([{ key: "ArrowDown", openThread: "child-1" }]);
+    // The open Thread's drawn row is marked as the open one, as Desktop marks its own rows.
+    const row = parent.item.querySelector(`[${SIDEBAR_TREE_NODE_ATTRIBUTE}="child-1"]`);
+    expect(row?.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("never opens the menu while the main view shows another Thread", async () => {
+    const { harness, drawn } = expandedChild({ childMounted: false });
+    const view = mainView("parent");
+    // Opening fails to show the Thread, as when Desktop cannot open it.
+    harness.openThread.mockImplementation(async () => undefined);
+
+    drawn.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(harness.openThread).toHaveBeenCalledWith("child-1");
+    expect(view.keys).toEqual([]);
+  });
+
+  it("keeps Desktop's row menu for a Thread whose Desktop row is mounted", async () => {
+    const { harness, child, drawn } = expandedChild();
+    const view = mainView("parent");
+    const menus: EventTarget[] = [];
+    child.row.element.addEventListener("contextmenu", (event) => {
+      if (event.target) menus.push(event.target);
+    });
+
+    drawn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(drawn.querySelector(`[${SIDEBAR_TREE_MENU_ATTRIBUTE}]`)).toBeNull();
+    expect(drawn.querySelectorAll(`[${SIDEBAR_TREE_ACTION_ATTRIBUTE}]`)).toHaveLength(2);
+    drawn.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true }));
+    await settle();
+    expect(menus).toEqual([child.row.element]);
+    expect(harness.openThread).not.toHaveBeenCalled();
+    expect(view.keys).toEqual([]);
   });
 
   it("renames the open Thread on a title double-click, as its Desktop row does", () => {

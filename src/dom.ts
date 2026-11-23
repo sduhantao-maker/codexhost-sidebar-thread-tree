@@ -47,6 +47,11 @@ export const SIDEBAR_TREE_VIRTUAL_ATTRIBUTE = "data-codexhost-sidebar-tree-virtu
 export const SIDEBAR_TREE_NODE_ATTRIBUTE = "data-codexhost-sidebar-tree-node";
 /** A button on a codexhost row that stands in for one of Desktop's own row actions. */
 export const SIDEBAR_TREE_ACTION_ATTRIBUTE = "data-codexhost-sidebar-tree-action";
+/**
+ * The button on a codexhost row whose Thread has no Desktop row: it opens Desktop's own menu of
+ * that Thread (rename, pin, archive, delete) instead.
+ */
+export const SIDEBAR_TREE_MENU_ATTRIBUTE = "data-codexhost-sidebar-tree-menu";
 /** Identity of codexhost rows across rebuilds, for focus and for expand and collapse motion. */
 export const SIDEBAR_TREE_KEY_ATTRIBUTE = "data-codexhost-sidebar-tree-key";
 /** Every node this module adds carries one of these, so observers can ignore its own writes. */
@@ -109,6 +114,8 @@ export interface SidebarThreadTreeLabels {
   running(count: number): string;
   pending(count: number): string;
   expandSummary(title: string, summary: string): string;
+  /** The button that opens Desktop's own menu of a Thread without a Desktop row. */
+  actions: string;
 }
 
 export interface SidebarThreadTreeHandlers {
@@ -121,6 +128,11 @@ export interface SidebarThreadTreeHandlers {
    * hand Desktop's row actions (pin, rename, archive) to it, so they act as Desktop's own do.
    */
   native(threadId: string): HTMLElement | null;
+  /**
+   * Opens Desktop's own menu of a Thread that has no Desktop row, such as a delegated Thread
+   * started in a folder that is not a project: the menu Desktop shows for the open Thread.
+   */
+  menu(threadId: string, source: Element): void;
 }
 
 interface TreeMetrics {
@@ -156,6 +168,8 @@ const measuredInPass = new WeakMap<Element, number>();
 let measuringPass = 0;
 /** The handlers of the latest render: Desktop remounts rows, so no render may keep its own. */
 const currentHandlers = new WeakMap<Element, SidebarThreadTreeHandlers>();
+/** The wording of the latest render, for controls added on hover. */
+const currentLabels = new WeakMap<Element, SidebarThreadTreeLabels>();
 
 /**
  * Events on codexhost controls and rows that must not reach Desktop: its rows navigate on
@@ -211,19 +225,45 @@ function nativeActions(native: HTMLElement): HTMLButtonElement[] {
   );
 }
 
+/** The button that opens Desktop's own menu of a Thread without a Desktop row. */
+function menuButton(ownerDocument: Document, label: string): HTMLButtonElement {
+  const button = ownerDocument.createElement("button");
+  button.type = "button";
+  button.className = SIDEBAR_TREE_ACTION_CLASS;
+  button.setAttribute(SIDEBAR_TREE_MENU_ATTRIBUTE, "");
+  button.setAttribute("aria-label", label);
+  button.setAttribute("aria-haspopup", "menu");
+  button.title = label;
+  const icon = ownerDocument.createElementNS(SVG_NAMESPACE, "svg");
+  icon.setAttribute("viewBox", "0 0 20 20");
+  icon.setAttribute("fill", "currentColor");
+  icon.setAttribute("aria-hidden", "true");
+  for (const cx of [5, 10, 15]) {
+    const dot = ownerDocument.createElementNS(SVG_NAMESPACE, "circle");
+    dot.setAttribute("cx", String(cx));
+    dot.setAttribute("cy", "10");
+    dot.setAttribute("r", "1.5");
+    icon.append(dot);
+  }
+  button.append(icon);
+  return button;
+}
+
 /**
  * Shows Desktop's own row actions on a row codexhost draws: each button mirrors one of the
- * Thread's native row, with its label and icon, so the row offers what a native row offers.
+ * Thread's native row, with its label and icon, so the row offers what a native row offers. A
+ * Thread Desktop has no row for gets one button instead, which opens Desktop's own menu of it.
  */
-function syncActions(row: HTMLElement, native: HTMLElement | null): void {
+function syncActions(row: HTMLElement, native: HTMLElement | null, menuLabel: string): void {
   const actions = native ? nativeActions(native) : [];
   let box = row.querySelector<HTMLElement>(`:scope > .${SIDEBAR_TREE_ACTIONS_CLASS}`);
-  if (actions.length === 0) {
+  // A Desktop row without actions, such as one whose actions Desktop disabled, offers none.
+  if (native && actions.length === 0) {
     box?.remove();
     return;
   }
   const labels = actions.map((action) => action.getAttribute("aria-label") ?? "");
-  const signature = labels.join("\u0000");
+  const signature = native ? labels.join("\u0000") : `menu\u0000${menuLabel}`;
   if (box?.dataset.signature === signature) return;
   const ownerDocument = row.ownerDocument;
   if (!box) {
@@ -232,6 +272,10 @@ function syncActions(row: HTMLElement, native: HTMLElement | null): void {
     row.append(box);
   }
   box.dataset.signature = signature;
+  if (!native) {
+    box.replaceChildren(menuButton(ownerDocument, menuLabel));
+    return;
+  }
   box.replaceChildren(
     ...actions.map((action, index) => {
       const label = labels[index] ?? "";
@@ -750,20 +794,29 @@ function wireContainer(container: HTMLElement, signal: AbortSignal): void {
   // reaches a codexhost row, so they always match what Desktop offers for that Thread.
   const offerActions = (event: Event): void => {
     const found = rowOf(event.target);
-    if (!found || !found.row.hasAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE)) return;
-    syncActions(found.row, currentHandlers.get(container)?.native(found.threadId) ?? null);
+    const labels = currentLabels.get(container);
+    if (!found || !labels || !found.row.hasAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE)) return;
+    syncActions(
+      found.row,
+      currentHandlers.get(container)?.native(found.threadId) ?? null,
+      labels.actions,
+    );
   };
   container.addEventListener("mouseover", offerActions, { signal });
   container.addEventListener("focusin", offerActions, { signal });
-  // A secondary press opens Desktop's own menu for that Thread (pin, rename, archive). Desktop
-  // places the menu at the pointer, so it opens where the press happened.
+  // A secondary press opens Desktop's own menu for that Thread (pin, rename, archive, delete).
+  // Desktop places a row's menu at the pointer, so it opens where the press happened. A Thread
+  // without a Desktop row has no such menu; Desktop's menu of the open Thread stands in for it.
   container.addEventListener(
     "contextmenu",
     (event) => {
       event.preventDefault();
       const found = rowOf(event.target);
-      const native = found ? currentHandlers.get(container)?.native(found.threadId) : null;
+      if (!found) return;
+      const handlers = currentHandlers.get(container);
+      const native = handlers?.native(found.threadId);
       if (native) replay(native, "contextmenu", event);
+      else handlers?.menu(found.threadId, found.row);
     },
     { signal },
   );
@@ -773,7 +826,8 @@ function wireContainer(container: HTMLElement, signal: AbortSignal): void {
     (event) => {
       if (
         closestAttribute(event.target, SIDEBAR_TREE_TOGGLE_ATTRIBUTE) ||
-        closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE)
+        closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE) ||
+        closestAttribute(event.target, SIDEBAR_TREE_MENU_ATTRIBUTE)
       )
         return;
       const row = closestAttribute(event.target, SIDEBAR_TREE_NODE_ATTRIBUTE);
@@ -793,6 +847,15 @@ function wireContainer(container: HTMLElement, signal: AbortSignal): void {
       const handlers = currentHandlers.get(container);
       event.stopPropagation();
       if (!handlers) return;
+      const menu = closestAttribute(event.target, SIDEBAR_TREE_MENU_ATTRIBUTE);
+      if (menu) {
+        event.preventDefault();
+        const threadId = closestAttribute(menu, SIDEBAR_TREE_NODE_ATTRIBUTE)?.getAttribute(
+          SIDEBAR_TREE_NODE_ATTRIBUTE,
+        );
+        if (threadId) handlers.menu(threadId, menu);
+        return;
+      }
       const action = closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE);
       if (action) {
         event.preventDefault();
@@ -1018,6 +1081,7 @@ export function renderSidebarThreadTreeRoot(
   if (container.getAttribute(attribute) !== view.threadId)
     container.setAttribute(attribute, view.threadId);
   currentHandlers.set(container, handlers);
+  currentLabels.set(container, labels);
   applyMetrics(container, metrics);
   // React may re-insert the row's own content after this container; keep codexhost content last.
   if (item.lastElementChild !== container) api.dom.mount(container, item, "append");
@@ -1074,6 +1138,7 @@ export function renderSidebarThreadTreeVirtual(
   if (container.getAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE) !== view.threadId)
     container.setAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE, view.threadId);
   currentHandlers.set(container, handlers);
+  currentLabels.set(container, labels);
   applyMetrics(container, metrics);
   if (item.firstElementChild !== container) api.dom.mount(container, item, "prepend");
   rebuild(container, presentationOf(view, true, locale), () => {

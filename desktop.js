@@ -365,6 +365,7 @@
   var SIDEBAR_TREE_VIRTUAL_ATTRIBUTE = "data-codexhost-sidebar-tree-virtual";
   var SIDEBAR_TREE_NODE_ATTRIBUTE = "data-codexhost-sidebar-tree-node";
   var SIDEBAR_TREE_ACTION_ATTRIBUTE = "data-codexhost-sidebar-tree-action";
+  var SIDEBAR_TREE_MENU_ATTRIBUTE = "data-codexhost-sidebar-tree-menu";
   var SIDEBAR_TREE_KEY_ATTRIBUTE = "data-codexhost-sidebar-tree-key";
   var SIDEBAR_TREE_OWNED_SELECTOR = [
     SIDEBAR_TREE_TOGGLE_ATTRIBUTE,
@@ -398,6 +399,7 @@
   var measuredInPass = /* @__PURE__ */ new WeakMap();
   var measuringPass = 0;
   var currentHandlers = /* @__PURE__ */ new WeakMap();
+  var currentLabels = /* @__PURE__ */ new WeakMap();
   var ISOLATED_EVENTS = [
     "pointerdown",
     "mousedown",
@@ -434,15 +436,37 @@
       (button) => button.querySelector("svg") !== null && !button.closest(SIDEBAR_TREE_OWNED_SELECTOR)
     );
   }
-  function syncActions(row, native) {
+  function menuButton(ownerDocument, label) {
+    const button = ownerDocument.createElement("button");
+    button.type = "button";
+    button.className = SIDEBAR_TREE_ACTION_CLASS;
+    button.setAttribute(SIDEBAR_TREE_MENU_ATTRIBUTE, "");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("aria-haspopup", "menu");
+    button.title = label;
+    const icon = ownerDocument.createElementNS(SVG_NAMESPACE, "svg");
+    icon.setAttribute("viewBox", "0 0 20 20");
+    icon.setAttribute("fill", "currentColor");
+    icon.setAttribute("aria-hidden", "true");
+    for (const cx of [5, 10, 15]) {
+      const dot = ownerDocument.createElementNS(SVG_NAMESPACE, "circle");
+      dot.setAttribute("cx", String(cx));
+      dot.setAttribute("cy", "10");
+      dot.setAttribute("r", "1.5");
+      icon.append(dot);
+    }
+    button.append(icon);
+    return button;
+  }
+  function syncActions(row, native, menuLabel) {
     const actions = native ? nativeActions(native) : [];
     let box = row.querySelector(`:scope > .${SIDEBAR_TREE_ACTIONS_CLASS}`);
-    if (actions.length === 0) {
+    if (native && actions.length === 0) {
       box?.remove();
       return;
     }
     const labels = actions.map((action) => action.getAttribute("aria-label") ?? "");
-    const signature = labels.join("\0");
+    const signature = native ? labels.join("\0") : `menu\0${menuLabel}`;
     if (box?.dataset.signature === signature) return;
     const ownerDocument = row.ownerDocument;
     if (!box) {
@@ -451,6 +475,10 @@
       row.append(box);
     }
     box.dataset.signature = signature;
+    if (!native) {
+      box.replaceChildren(menuButton(ownerDocument, menuLabel));
+      return;
+    }
     box.replaceChildren(
       ...actions.map((action, index) => {
         const label = labels[index] ?? "";
@@ -836,8 +864,13 @@
     };
     const offerActions = (event) => {
       const found = rowOf(event.target);
-      if (!found || !found.row.hasAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE)) return;
-      syncActions(found.row, currentHandlers.get(container)?.native(found.threadId) ?? null);
+      const labels = currentLabels.get(container);
+      if (!found || !labels || !found.row.hasAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE)) return;
+      syncActions(
+        found.row,
+        currentHandlers.get(container)?.native(found.threadId) ?? null,
+        labels.actions
+      );
     };
     container.addEventListener("mouseover", offerActions, { signal });
     container.addEventListener("focusin", offerActions, { signal });
@@ -846,15 +879,18 @@
       (event) => {
         event.preventDefault();
         const found = rowOf(event.target);
-        const native = found ? currentHandlers.get(container)?.native(found.threadId) : null;
+        if (!found) return;
+        const handlers = currentHandlers.get(container);
+        const native = handlers?.native(found.threadId);
         if (native) replay(native, "contextmenu", event);
+        else handlers?.menu(found.threadId, found.row);
       },
       { signal }
     );
     container.addEventListener(
       "dblclick",
       (event) => {
-        if (closestAttribute(event.target, SIDEBAR_TREE_TOGGLE_ATTRIBUTE) || closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE))
+        if (closestAttribute(event.target, SIDEBAR_TREE_TOGGLE_ATTRIBUTE) || closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE) || closestAttribute(event.target, SIDEBAR_TREE_MENU_ATTRIBUTE))
           return;
         const row = closestAttribute(event.target, SIDEBAR_TREE_NODE_ATTRIBUTE);
         const threadId = row?.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE);
@@ -870,6 +906,15 @@
         const handlers = currentHandlers.get(container);
         event.stopPropagation();
         if (!handlers) return;
+        const menu = closestAttribute(event.target, SIDEBAR_TREE_MENU_ATTRIBUTE);
+        if (menu) {
+          event.preventDefault();
+          const threadId2 = closestAttribute(menu, SIDEBAR_TREE_NODE_ATTRIBUTE)?.getAttribute(
+            SIDEBAR_TREE_NODE_ATTRIBUTE
+          );
+          if (threadId2) handlers.menu(threadId2, menu);
+          return;
+        }
         const action = closestAttribute(event.target, SIDEBAR_TREE_ACTION_ATTRIBUTE);
         if (action) {
           event.preventDefault();
@@ -1046,6 +1091,7 @@
     if (container.getAttribute(attribute) !== view.threadId)
       container.setAttribute(attribute, view.threadId);
     currentHandlers.set(container, handlers);
+    currentLabels.set(container, labels);
     applyMetrics(container, metrics);
     if (item.lastElementChild !== container) api.dom.mount(container, item, "append");
     rebuild(container, presentationOf(view, false, locale), () => {
@@ -1090,6 +1136,7 @@
     if (container.getAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE) !== view.threadId)
       container.setAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE, view.threadId);
     currentHandlers.set(container, handlers);
+    currentLabels.set(container, labels);
     applyMetrics(container, metrics);
     if (item.firstElementChild !== container) api.dom.mount(container, item, "prepend");
     rebuild(container, presentationOf(view, true, locale), () => {
@@ -1158,6 +1205,10 @@
   var TITLE_ATTRIBUTE = "data-app-action-sidebar-thread-title";
   var COMPOSER_THREAD_ATTRIBUTE = "data-above-composer-conversation-id";
   var WATCHED_SELECTOR = `${SIDEBAR_SELECTOR}, [${COMPOSER_THREAD_ATTRIBUTE}]`;
+  var HEADER_MENU_SELECTOR = '[data-app-shell-header-toolbar] button[aria-haspopup="menu"]';
+  var MENU_WAIT_MS = 5e3;
+  var MENU_POLL_MS = 50;
+  var MENU_SETTLE_CHECKS = 2;
   var MAX_REMEMBERED_EXPANDED = 500;
   var PLAIN = { kind: "plain" };
   var SIDEBAR_THREAD_TREE_EXPANDED_KEY = "codexhost.sidebar-thread-tree.expanded.v1";
@@ -1170,7 +1221,9 @@
       children: (count) => chinese ? `${count} \u4E2A\u5B50\u4F1A\u8BDD` : `${count} child sessions`,
       running: (count) => chinese ? `${count} \u8FD0\u884C\u4E2D` : `${count} running`,
       pending: (count) => chinese ? `${count} \u5F85\u6279\u51C6` : `${count} needs approval`,
-      expandSummary: (title, summary) => chinese ? `${title}\uFF0C${summary}\uFF0C\u5C55\u5F00` : `${title}, ${summary}, expand`
+      expandSummary: (title, summary) => chinese ? `${title}\uFF0C${summary}\uFF0C\u5C55\u5F00` : `${title}, ${summary}, expand`,
+      // Desktop's own name for the menu it opens.
+      actions: chinese ? "\u804A\u5929\u64CD\u4F5C" : "Chat actions"
     };
   }
   function readExpanded(storage) {
@@ -1295,16 +1348,20 @@
         if (!api.signal.aborted) console.warn("codexhost could not open the delegated Thread", error);
       });
     };
-    const openThreadId = (rows) => {
+    const composerThreadIds = () => {
       const shown = /* @__PURE__ */ new Set();
       const all = /* @__PURE__ */ new Set();
       for (const portal of root.querySelectorAll(`[${COMPOSER_THREAD_ATTRIBUTE}]`)) {
         const threadId = portal.getAttribute(COMPOSER_THREAD_ATTRIBUTE);
         if (!threadId) continue;
         all.add(threadId);
-        if (portal.getClientRects().length > 0) shown.add(threadId);
+        if (portal.getClientRects().length > 0 || (portal.parentElement?.getClientRects().length ?? 0) > 0)
+          shown.add(threadId);
       }
-      const composers = shown.size > 0 ? shown : all;
+      return shown.size > 0 ? shown : all;
+    };
+    const openThreadId = (rows) => {
+      const composers = composerThreadIds();
       if (composers.size === 1) return [...composers][0] ?? null;
       for (const [threadId, list] of rows) {
         if (list.some((row) => row.getAttribute(ACTIVE_ATTRIBUTE2) === "true")) return threadId;
@@ -1336,7 +1393,55 @@
     };
     let nativeRows = /* @__PURE__ */ new Map();
     const nativeRow = (threadId) => nativeRows.get(threadId)?.find((element) => element.isConnected) ?? null;
-    const handlers = { toggle, open: navigate, native: nativeRow };
+    const headerMenuOf = (threadId) => {
+      const composers = composerThreadIds();
+      if (composers.size !== 1 || !composers.has(threadId)) return null;
+      const triggers = [...root.querySelectorAll(HEADER_MENU_SELECTOR)];
+      const shown = triggers.filter((trigger2) => trigger2.getClientRects().length > 0);
+      const candidates = shown.length > 0 ? shown : triggers;
+      const trigger = candidates.length === 1 ? candidates[0] : void 0;
+      if (!trigger || trigger.matches(":disabled") || trigger.getAttribute("aria-disabled") === "true")
+        return null;
+      return trigger;
+    };
+    let menuRequest = 0;
+    const openMenu = (threadId) => {
+      if (disposed || api.signal.aborted) return;
+      const request = menuRequest += 1;
+      const current = () => !disposed && !api.signal.aborted && request === menuRequest;
+      void (async () => {
+        const composers = composerThreadIds();
+        if (composers.size !== 1 || !composers.has(threadId)) await api.navigate.openThread(threadId);
+        const deadline = Date.now() + MENU_WAIT_MS;
+        let trigger = null;
+        let settled = 0;
+        while (current() && settled < MENU_SETTLE_CHECKS && Date.now() < deadline) {
+          await new Promise((resolve) => view.setTimeout(resolve, MENU_POLL_MS));
+          const found = headerMenuOf(threadId);
+          settled = found !== null && found === trigger ? settled + 1 : found ? 1 : 0;
+          trigger = found;
+        }
+        if (!current() || !trigger || settled < MENU_SETTLE_CHECKS || !trigger.isConnected) return;
+        if (trigger.getAttribute("aria-expanded") === "true") return;
+        trigger.focus({ preventScroll: true });
+        trigger.dispatchEvent(
+          new view.KeyboardEvent("keydown", {
+            key: "ArrowDown",
+            code: "ArrowDown",
+            bubbles: true,
+            cancelable: true
+          })
+        );
+      })().catch((error) => {
+        if (!api.signal.aborted) console.warn("codexhost could not open the Thread's menu", error);
+      });
+    };
+    const handlers = {
+      toggle,
+      open: navigate,
+      native: nativeRow,
+      menu: openMenu
+    };
     const apply = () => {
       cancelScheduledApply();
       if (disposed || api.signal.aborted || !snapshot) return;

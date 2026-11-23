@@ -24,7 +24,7 @@ Run `npm run package`, then import `dist/sidebar-thread-tree.zip` through **Sett
 
 ## Keep the extension safe to run
 
-- Never change a Thread on its own. Pin, rename and archive the user asks for go through the Thread's own Desktop row.
+- Never change a Thread on its own. Pin, rename and archive the user asks for go through the Thread's own Desktop row. A Thread without one gets Desktop's own **Chat actions** menu of the open Thread instead, opened only once the main view shows that Thread.
 - Leave Desktop's own rows in place: add nodes with `api.dom.mount` and hide rows only with `api.dom.mark`, so turning the extension off restores the sidebar.
 - Make no network requests, and do not use `eval`, `new Function` or `child_process`. The marketplace rejects packages that do.
 - Check light and dark themes, and keep motion off under Reduce Motion.
@@ -66,7 +66,7 @@ npm run package   # 生成 dist/sidebar-thread-tree.zip
 
 ## 让插件始终安全可用
 
-- 插件不自行改动任何会话。用户要求的置顶、重命名和归档，都交给该会话自己的 Desktop 原生行执行。
+- 插件不自行改动任何会话。用户要求的置顶、重命名和归档，都交给该会话自己的 Desktop 原生行执行。没有原生行的会话，改用 Desktop 为当前会话提供的「聊天操作」菜单，并且只在主界面已经显示这个会话后才弹出。
 - 不动 Desktop 的原生行。新节点用 `api.dom.mount` 添加，隐藏行只用 `api.dom.mark`，这样关闭插件就能恢复原样。
 - 不发起网络请求，不使用 `eval`、`new Function` 或 `child_process`，插件市场会拒收这类安装包。
 - 浅色和深色主题都要检查，开启“减少动态效果”时不播放动效。

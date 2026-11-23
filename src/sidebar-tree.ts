@@ -49,6 +49,16 @@ const TITLE_ATTRIBUTE = "data-app-action-sidebar-thread-title";
 const COMPOSER_THREAD_ATTRIBUTE = "data-above-composer-conversation-id";
 /** Nodes whose arrival or removal changes what the tree shows. */
 const WATCHED_SELECTOR = `${SIDEBAR_SELECTOR}, [${COMPOSER_THREAD_ATTRIBUTE}]`;
+/**
+ * The button in Desktop's header that opens the open Thread's own menu (rename, pin, archive,
+ * delete). It is the only menu button of the header toolbar.
+ */
+const HEADER_MENU_SELECTOR = '[data-app-shell-header-toolbar] button[aria-haspopup="menu"]';
+/** How long the main view may take to show a Thread opened for its menu. */
+const MENU_WAIT_MS = 5000;
+const MENU_POLL_MS = 50;
+/** Consecutive checks the Thread must stay alone in the main view before its menu is opened. */
+const MENU_SETTLE_CHECKS = 2;
 const MAX_REMEMBERED_EXPANDED = 500;
 const PLAIN: SidebarThreadTreeRowPlan = { kind: "plain" };
 export const SIDEBAR_THREAD_TREE_EXPANDED_KEY = "codexhost.sidebar-thread-tree.expanded.v1";
@@ -80,6 +90,8 @@ export function sidebarThreadTreeLabels(locale: SidebarTreeLocale): SidebarThrea
     pending: (count) => (chinese ? `${count} 待批准` : `${count} needs approval`),
     expandSummary: (title, summary) =>
       chinese ? `${title}，${summary}，展开` : `${title}, ${summary}, expand`,
+    // Desktop's own name for the menu it opens.
+    actions: chinese ? "聊天操作" : "Chat actions",
   };
 }
 
@@ -262,18 +274,29 @@ export function activate(
     });
   };
 
-  /** The open Thread: the Composer names it even when it has no sidebar row. */
-  const openThreadId = (rows: ReadonlyMap<string, HTMLElement[]>): string | null => {
+  /** The Threads whose Composer the main view shows; Desktop shows one at a time. */
+  const composerThreadIds = (): Set<string> => {
     const shown = new Set<string>();
     const all = new Set<string>();
     for (const portal of root.querySelectorAll(`[${COMPOSER_THREAD_ATTRIBUTE}]`)) {
       const threadId = portal.getAttribute(COMPOSER_THREAD_ATTRIBUTE);
       if (!threadId) continue;
       all.add(threadId);
-      if (portal.getClientRects().length > 0) shown.add(threadId);
+      // Desktop hides the portal itself while nothing sits above the Composer, and hides the
+      // Composers of earlier views further up, so a shown Composer has the portal's place laid out.
+      if (
+        portal.getClientRects().length > 0 ||
+        (portal.parentElement?.getClientRects().length ?? 0) > 0
+      )
+        shown.add(threadId);
     }
     // A hidden Composer of an earlier view may still name its own Thread.
-    const composers = shown.size > 0 ? shown : all;
+    return shown.size > 0 ? shown : all;
+  };
+
+  /** The open Thread: the Composer names it even when it has no sidebar row. */
+  const openThreadId = (rows: ReadonlyMap<string, HTMLElement[]>): string | null => {
+    const composers = composerThreadIds();
     if (composers.size === 1) return [...composers][0] ?? null;
     for (const [threadId, list] of rows) {
       if (list.some((row) => row.getAttribute(ACTIVE_ATTRIBUTE) === "true")) return threadId;
@@ -311,9 +334,67 @@ export function activate(
   const nativeRow = (threadId: string): HTMLElement | null =>
     nativeRows.get(threadId)?.find((element) => element.isConnected) ?? null;
 
+  /** Desktop's menu button for `threadId`, once the main view shows that Thread alone. */
+  const headerMenuOf = (threadId: string): HTMLElement | null => {
+    const composers = composerThreadIds();
+    if (composers.size !== 1 || !composers.has(threadId)) return null;
+    const triggers = [...root.querySelectorAll<HTMLElement>(HEADER_MENU_SELECTOR)];
+    const shown = triggers.filter((trigger) => trigger.getClientRects().length > 0);
+    const candidates = shown.length > 0 ? shown : triggers;
+    const trigger = candidates.length === 1 ? candidates[0] : undefined;
+    if (!trigger || trigger.matches(":disabled") || trigger.getAttribute("aria-disabled") === "true")
+      return null;
+    return trigger;
+  };
+
+  let menuRequest = 0;
+  /**
+   * Opens Desktop's own menu of a Thread that has no Desktop row. Desktop offers such a Thread's
+   * actions only in its header, so the Thread is opened first; once the main view has shown it
+   * alone for a moment, Desktop's header menu opens. If the Thread does not show in time, or the
+   * user asks for another menu meanwhile, nothing opens, so the menu never acts on another Thread.
+   */
+  const openMenu = (threadId: string): void => {
+    if (disposed || api.signal.aborted) return;
+    const request = (menuRequest += 1);
+    const current = (): boolean => !disposed && !api.signal.aborted && request === menuRequest;
+    void (async () => {
+      const composers = composerThreadIds();
+      if (composers.size !== 1 || !composers.has(threadId)) await api.navigate.openThread(threadId);
+      const deadline = Date.now() + MENU_WAIT_MS;
+      let trigger: HTMLElement | null = null;
+      let settled = 0;
+      while (current() && settled < MENU_SETTLE_CHECKS && Date.now() < deadline) {
+        await new Promise((resolve) => view.setTimeout(resolve, MENU_POLL_MS));
+        const found = headerMenuOf(threadId);
+        settled = found !== null && found === trigger ? settled + 1 : found ? 1 : 0;
+        trigger = found;
+      }
+      if (!current() || !trigger || settled < MENU_SETTLE_CHECKS || !trigger.isConnected) return;
+      if (trigger.getAttribute("aria-expanded") === "true") return;
+      trigger.focus({ preventScroll: true });
+      // Desktop opens the menu from the keyboard as from a press, with focus on its first item.
+      trigger.dispatchEvent(
+        new view.KeyboardEvent("keydown", {
+          key: "ArrowDown",
+          code: "ArrowDown",
+          bubbles: true,
+          cancelable: true,
+        }),
+      );
+    })().catch((error: unknown) => {
+      if (!api.signal.aborted) console.warn("codexhost could not open the Thread's menu", error);
+    });
+  };
+
   // A row press only opens: on the Web it also folds the open Thread, but on Desktop the first
   // press of a double-click on the open row's title is the start of a rename.
-  const handlers: SidebarThreadTreeHandlers = { toggle, open: navigate, native: nativeRow };
+  const handlers: SidebarThreadTreeHandlers = {
+    toggle,
+    open: navigate,
+    native: nativeRow,
+    menu: openMenu,
+  };
 
   const apply = (): void => {
     cancelScheduledApply();
