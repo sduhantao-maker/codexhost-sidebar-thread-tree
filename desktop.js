@@ -1,4 +1,186 @@
 (() => {
+  // src/handoff.ts
+  var EMPTY_HANDOFFS = { links: [], threads: {} };
+  var HANDOFFS_METHOD = "handoffs";
+  var MAX_HANDOFF_CHAIN = 16;
+  var MAX_DESCRIBED_THREADS = 64;
+  var HANDOFF_POLL_MS = 15e3;
+  function isRecord(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+  }
+  function nonEmpty(value, max = 512) {
+    return typeof value === "string" && value.trim().length > 0 && value.length <= max ? value : void 0;
+  }
+  var STATUSES = /* @__PURE__ */ new Set(["running", "waiting", "idle", "unknown"]);
+  function parseHandoffSnapshot(value) {
+    if (!isRecord(value)) return EMPTY_HANDOFFS;
+    const links = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const entry of Array.isArray(value.links) ? value.links : []) {
+      if (!isRecord(entry)) continue;
+      const target = nonEmpty(entry.target, 256);
+      const source = nonEmpty(entry.source, 256);
+      if (!target || !source || target === source || seen.has(target)) continue;
+      seen.add(target);
+      const at = typeof entry.at === "number" && Number.isFinite(entry.at) ? entry.at : 0;
+      links.push({ target, source, at });
+    }
+    const threads = {};
+    if (isRecord(value.threads)) {
+      for (const [threadId, entry] of Object.entries(value.threads)) {
+        if (!isRecord(entry) || !nonEmpty(threadId, 256)) continue;
+        const info = {};
+        const title = nonEmpty(entry.title, 4096);
+        const agent = nonEmpty(entry.agent, 128);
+        if (title) info.title = title;
+        if (agent) info.agent = agent;
+        if (typeof entry.status === "string" && STATUSES.has(entry.status))
+          info.status = entry.status;
+        if (typeof entry.updatedAt === "number" && Number.isFinite(entry.updatedAt))
+          info.updatedAt = entry.updatedAt;
+        threads[threadId] = info;
+      }
+    }
+    return { links, threads };
+  }
+  function sameHandoffs(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+  function handoffMembers(links) {
+    const members = /* @__PURE__ */ new Set();
+    for (const { target, source } of links) members.add(target).add(source);
+    return members;
+  }
+  function handoffChains(links, include) {
+    const parent = /* @__PURE__ */ new Map();
+    const find = (id) => {
+      let root = id;
+      for (let next = parent.get(root); next !== void 0 && next !== root; next = parent.get(root))
+        root = next;
+      for (let node = id; node !== root; ) {
+        const next = parent.get(node) ?? root;
+        parent.set(node, root);
+        node = next;
+      }
+      return root;
+    };
+    const arrival = /* @__PURE__ */ new Map();
+    for (const { target, source, at } of links) {
+      if (!parent.has(target)) parent.set(target, target);
+      if (!parent.has(source)) parent.set(source, source);
+      const a = find(target);
+      const b = find(source);
+      if (a !== b) parent.set(a < b ? b : a, a < b ? a : b);
+      arrival.set(target, Math.max(arrival.get(target) ?? Number.NEGATIVE_INFINITY, at));
+    }
+    const groups = /* @__PURE__ */ new Map();
+    for (const id of parent.keys()) {
+      if (!include(id)) continue;
+      const root = find(id);
+      let members = groups.get(root);
+      if (!members) groups.set(root, members = []);
+      members.push(id);
+    }
+    const chains = [];
+    for (const members of groups.values()) {
+      if (members.length < 2) continue;
+      members.sort(
+        (left, right) => (arrival.get(right) ?? Number.NEGATIVE_INFINITY) - (arrival.get(left) ?? Number.NEGATIVE_INFINITY) || (left < right ? -1 : left > right ? 1 : 0)
+      );
+      chains.push(members.slice(0, MAX_HANDOFF_CHAIN));
+    }
+    return chains;
+  }
+  var RETRY_FIRST_MS = 1e3;
+  var HandoffSource = class {
+    constructor(options) {
+      this.options = options;
+    }
+    options;
+    snapshot = EMPTY_HANDOFFS;
+    #wanted = [];
+    #asked = null;
+    #running = false;
+    #again = false;
+    #retryMs = 0;
+    #retryTimer;
+    #pollTimer;
+    #disposed = false;
+    start() {
+      this.refresh();
+      this.#pollTimer = this.options.timers.setInterval(() => {
+        if (this.options.visible()) this.refresh();
+      }, HANDOFF_POLL_MS);
+    }
+    /** The Threads the surface cannot show without the backend's description. */
+    want(threadIds) {
+      const wanted = [...new Set(threadIds)].sort().slice(0, MAX_DESCRIBED_THREADS);
+      this.#wanted = wanted;
+      if (wanted.join("\0") !== this.#asked) this.refresh();
+    }
+    refresh() {
+      if (this.#disposed) return;
+      if (this.#running) {
+        this.#again = true;
+        return;
+      }
+      if (this.#retryTimer !== void 0) {
+        this.options.timers.clearTimeout(this.#retryTimer);
+        this.#retryTimer = void 0;
+      }
+      this.#running = true;
+      const describe = this.#wanted;
+      this.#asked = describe.join("\0");
+      void this.options.invoke(HANDOFFS_METHOD, { describe }).then(
+        (value) => {
+          this.#retryMs = 0;
+          if (this.#disposed) return;
+          const next = parseHandoffSnapshot(value);
+          if (sameHandoffs(next, this.snapshot)) return;
+          this.snapshot = next;
+          this.options.onChange();
+        },
+        () => {
+          if (this.#disposed) return;
+          this.#retryMs = Math.min(
+            HANDOFF_POLL_MS,
+            this.#retryMs === 0 ? RETRY_FIRST_MS : this.#retryMs * 2
+          );
+          this.#retryTimer = this.options.timers.setTimeout(() => {
+            this.#retryTimer = void 0;
+            this.refresh();
+          }, this.#retryMs);
+        }
+      ).finally(() => {
+        this.#running = false;
+        if (!this.#again) return;
+        this.#again = false;
+        this.refresh();
+      });
+    }
+    dispose() {
+      this.#disposed = true;
+      if (this.#pollTimer !== void 0) this.options.timers.clearInterval(this.#pollTimer);
+      if (this.#retryTimer !== void 0) this.options.timers.clearTimeout(this.#retryTimer);
+      this.#pollTimer = void 0;
+      this.#retryTimer = void 0;
+    }
+  };
+  var RAIL_ELBOW_PX = 10.5;
+  var RAIL_GAP_PX = 6;
+  var RAIL_MIN_GAP_PX = 3;
+  var RAIL_MIN_ELBOW_PX = 4;
+  function handoffRail(iconLeft, minX = 1) {
+    let gap = RAIL_GAP_PX;
+    let x = iconLeft - gap - RAIL_ELBOW_PX;
+    if (x < minX) {
+      gap = Math.max(RAIL_MIN_GAP_PX, iconLeft - minX - RAIL_ELBOW_PX);
+      x = Math.max(minX, iconLeft - gap - RAIL_ELBOW_PX);
+    }
+    const width = Math.max(RAIL_MIN_ELBOW_PX, iconLeft - gap - x);
+    return { x: Math.round(x * 2) / 2, width: Math.round(width * 2) / 2 };
+  }
+
   // src/motion.ts
   var SIDEBAR_TREE_MOTION_ATTRIBUTE = "data-codexhost-sidebar-tree-motion";
   var ROW_FADE_MS = 100;
@@ -313,10 +495,35 @@
       }
       return tree;
     };
+    const groups = /* @__PURE__ */ new Map();
+    const chains = handoffChains(
+      input.handoffs ?? [],
+      (threadId) => showable(threadId) && topOf(threadId) === threadId
+    );
+    for (const chain of chains) {
+      const units = chain.map(treeOf);
+      for (const unit of units) groups.set(unit.threadId, units);
+    }
     const plans = /* @__PURE__ */ new Map();
     const placed = /* @__PURE__ */ new Set();
     for (const row of input.rows) {
       const rootId = topOf(row.threadId);
+      const units = showable(rootId) ? groups.get(rootId) : void 0;
+      const head = units?.[0];
+      if (units && head) {
+        const group2 = `${row.list}\0${head.threadId}`;
+        if (placed.has(group2)) {
+          plans.set(row.key, { kind: "hidden", rootId: head.threadId });
+          continue;
+        }
+        placed.add(group2);
+        plans.set(row.key, {
+          kind: row.threadId === head.threadId ? "root" : "virtual",
+          tree: head,
+          handoff: units.slice(1)
+        });
+        continue;
+      }
       const tree = showable(rootId) ? treeOf(rootId) : null;
       if (!tree || tree.descendants === 0) {
         plans.set(row.key, { kind: "plain" });
@@ -356,6 +563,7 @@
   var SIDEBAR_TREE_VIRTUAL_CLASS = "cxh-tree-virtual";
   var SIDEBAR_TREE_ACTIONS_CLASS = "cxh-tree-actions";
   var SIDEBAR_TREE_ACTION_CLASS = "cxh-tree-action";
+  var SIDEBAR_TREE_HANDOFF_CLASS = "cxh-tree-handoff";
   var SIDEBAR_TREE_INDENT_PX = 24;
   var SIDEBAR_TREE_ICON_PX = 14;
   var SIDEBAR_TREE_TOGGLE_ATTRIBUTE = "data-codexhost-sidebar-tree-toggle";
@@ -367,11 +575,15 @@
   var SIDEBAR_TREE_ACTION_ATTRIBUTE = "data-codexhost-sidebar-tree-action";
   var SIDEBAR_TREE_MENU_ATTRIBUTE = "data-codexhost-sidebar-tree-menu";
   var SIDEBAR_TREE_KEY_ATTRIBUTE = "data-codexhost-sidebar-tree-key";
+  var SIDEBAR_TREE_HANDOFF_ATTRIBUTE = "data-codexhost-sidebar-tree-handoff";
+  var SIDEBAR_TREE_RAIL_ATTRIBUTE = "data-handoff";
+  var SIDEBAR_TREE_RAIL_HEAD_ATTRIBUTE = "data-handoff-head";
   var SIDEBAR_TREE_OWNED_SELECTOR = [
     SIDEBAR_TREE_TOGGLE_ATTRIBUTE,
     SIDEBAR_TREE_SUMMARY_ATTRIBUTE,
     SIDEBAR_TREE_CHILDREN_ATTRIBUTE,
     SIDEBAR_TREE_VIRTUAL_ATTRIBUTE,
+    SIDEBAR_TREE_HANDOFF_ATTRIBUTE,
     SIDEBAR_TREE_MOTION_ATTRIBUTE
   ].map((name) => `[${name}]`).join(", ");
   var SVG_NAMESPACE = "http://www.w3.org/2000/svg";
@@ -623,6 +835,9 @@
     setVariable(element, "--cxh-title-weight", metrics.titleWeight);
     setVariable(element, "--cxh-title-color", metrics.titleColor);
     setVariable(element, "--cxh-summary-start", `${String(Math.max(0, metrics.titleLeft - 8))}px`);
+    const rail = handoffRail(metrics.iconLeft);
+    setVariable(element, "--cxh-rail-x", `${String(rail.x)}px`);
+    setVariable(element, "--cxh-rail-w", `${String(rail.width)}px`);
   }
   function indentOf(depth) {
     return `${String(Math.min(depth, SIDEBAR_THREAD_TREE_MAX_INDENT_DEPTH) * SIDEBAR_TREE_INDENT_PX)}px`;
@@ -819,9 +1034,8 @@
       if (children) groups[node.depth] = children;
     }
   }
-  function presentationOf(view, withRoot, locale) {
-    return JSON.stringify([
-      locale,
+  function presentationValue(view, withRoot) {
+    return [
       view.threadId,
       view.expanded,
       view.descendants,
@@ -845,7 +1059,36 @@
         node.expanded,
         node.activity
       ])
-    ]);
+    ];
+  }
+  function presentationOf(view, withRoot, locale) {
+    return JSON.stringify([locale, ...presentationValue(view, withRoot)]);
+  }
+  function unitsPresentation(units, locale) {
+    return JSON.stringify([locale, units.map((unit) => presentationValue(unit, true))]);
+  }
+  function railPlace(index, count, startsRail) {
+    if (index === 0 && startsRail) return "first";
+    return index === count - 1 ? "last" : "middle";
+  }
+  function unitBranch(ownerDocument, unit, labels, place) {
+    const { element, children } = branch(
+      ownerDocument,
+      {
+        threadId: unit.threadId,
+        depth: 0,
+        status: unit.status,
+        descendants: unit.descendants,
+        expanded: unit.expanded,
+        rollup: unit.rollup,
+        activity: unit.activity,
+        ...unit.root
+      },
+      labels
+    );
+    if (children) fillChildren(ownerDocument, children, unit.nodes, labels);
+    if (place) element.setAttribute(SIDEBAR_TREE_RAIL_ATTRIBUTE, place);
+    return element;
   }
   function focusToggleOf(scope, threadId) {
     if (!scope?.isConnected) return;
@@ -1059,7 +1302,8 @@
   }
   function renderSidebarThreadTreeRoot(api, row, view, labels, handlers, locale) {
     const parts = nativeParts(row);
-    if (!parts || view.descendants === 0) {
+    const handoff = view.handoff ?? [];
+    if (!parts || view.descendants === 0 && handoff.length === 0) {
       clearSidebarThreadTreeRow(api, row);
       return false;
     }
@@ -1067,63 +1311,104 @@
     const ownerDocument = row.ownerDocument;
     clearVirtual(api, item);
     const metrics = metricsFor(api.id, row, item);
-    placeToggle(api, row, trigger, view, labels, handlers);
-    setMark(api, item, "root-expanded", view.expanded);
-    setMark(api, item, "root-collapsed", !view.expanded);
-    const attribute = view.expanded ? SIDEBAR_TREE_CHILDREN_ATTRIBUTE : SIDEBAR_TREE_SUMMARY_ATTRIBUTE;
-    ownedChild(
-      item,
-      view.expanded ? SIDEBAR_TREE_SUMMARY_ATTRIBUTE : SIDEBAR_TREE_CHILDREN_ATTRIBUTE
-    )?.remove();
-    let container = ownedChild(item, attribute);
-    if (!container) {
-      container = ownerDocument.createElement("div");
-      if (view.expanded) {
-        container.className = SIDEBAR_TREE_CHILDREN_CLASS;
-        container.setAttribute("role", "group");
-        container.setAttribute("data-guide", "");
-        container.style.setProperty("--cxh-guide-indent", "0px");
-      } else {
-        container.className = SIDEBAR_TREE_SUMMARY_LINE_CLASS;
+    let tree = null;
+    if (view.descendants === 0) {
+      clearNativeRoot(api, row, item);
+    } else {
+      placeToggle(api, row, trigger, view, labels, handlers);
+      setMark(api, item, "root-expanded", view.expanded);
+      setMark(api, item, "root-collapsed", !view.expanded);
+      const attribute = view.expanded ? SIDEBAR_TREE_CHILDREN_ATTRIBUTE : SIDEBAR_TREE_SUMMARY_ATTRIBUTE;
+      ownedChild(
+        item,
+        view.expanded ? SIDEBAR_TREE_SUMMARY_ATTRIBUTE : SIDEBAR_TREE_CHILDREN_ATTRIBUTE
+      )?.remove();
+      let container = ownedChild(item, attribute);
+      if (!container) {
+        container = ownerDocument.createElement("div");
+        if (view.expanded) {
+          container.className = SIDEBAR_TREE_CHILDREN_CLASS;
+          container.setAttribute("role", "group");
+          container.setAttribute("data-guide", "");
+          container.style.setProperty("--cxh-guide-indent", "0px");
+        } else {
+          container.className = SIDEBAR_TREE_SUMMARY_LINE_CLASS;
+        }
+        wireContainer(container, api.signal);
       }
-      wireContainer(container, api.signal);
+      if (container.getAttribute(attribute) !== view.threadId)
+        container.setAttribute(attribute, view.threadId);
+      currentHandlers.set(container, handlers);
+      currentLabels.set(container, labels);
+      applyMetrics(container, metrics);
+      rebuild(container, presentationOf(view, false, locale), () => {
+        if (!view.expanded) {
+          return [
+            summaryButton(
+              ownerDocument,
+              {
+                threadId: view.threadId,
+                title: view.root.title,
+                descendants: view.descendants,
+                activity: view.activity
+              },
+              labels
+            )
+          ];
+        }
+        const holder = ownerDocument.createElement("div");
+        fillChildren(ownerDocument, holder, view.nodes, labels);
+        return [...holder.childNodes];
+      });
+      tree = container;
     }
-    if (container.getAttribute(attribute) !== view.threadId)
-      container.setAttribute(attribute, view.threadId);
-    currentHandlers.set(container, handlers);
-    currentLabels.set(container, labels);
-    applyMetrics(container, metrics);
-    if (item.lastElementChild !== container) api.dom.mount(container, item, "append");
-    rebuild(container, presentationOf(view, false, locale), () => {
-      if (!view.expanded) {
-        return [
-          summaryButton(
-            ownerDocument,
-            {
-              threadId: view.threadId,
-              title: view.root.title,
-              descendants: view.descendants,
-              activity: view.activity
-            },
-            labels
-          )
-        ];
+    let group = ownedChild(item, SIDEBAR_TREE_HANDOFF_ATTRIBUTE);
+    if (handoff.length === 0) {
+      group?.remove();
+      group = null;
+    } else {
+      if (!group) {
+        group = ownerDocument.createElement("div");
+        group.className = SIDEBAR_TREE_HANDOFF_CLASS;
+        group.setAttribute("role", "group");
+        wireContainer(group, api.signal);
       }
-      const holder = ownerDocument.createElement("div");
-      fillChildren(ownerDocument, holder, view.nodes, labels);
-      return [...holder.childNodes];
-    });
+      if (group.getAttribute(SIDEBAR_TREE_HANDOFF_ATTRIBUTE) !== view.threadId)
+        group.setAttribute(SIDEBAR_TREE_HANDOFF_ATTRIBUTE, view.threadId);
+      currentHandlers.set(group, handlers);
+      currentLabels.set(group, labels);
+      applyMetrics(group, metrics);
+      const units = handoff;
+      rebuild(
+        group,
+        unitsPresentation(units, locale),
+        () => units.map(
+          (unit, index) => unitBranch(ownerDocument, unit, labels, railPlace(index, units.length, false))
+        )
+      );
+    }
+    const head = handoff.length > 0 ? tree ?? group : null;
+    for (const element of [tree, group]) {
+      if (element) element.toggleAttribute(SIDEBAR_TREE_RAIL_HEAD_ATTRIBUTE, element === head);
+    }
+    const owned = [tree, group].filter((element) => element !== null);
+    const tail = [...item.children].slice(-owned.length);
+    if (owned.some((element, index) => tail[index] !== element)) {
+      for (const element of owned) api.dom.mount(element, item, "append");
+    }
     return true;
   }
   function renderSidebarThreadTreeVirtual(api, row, view, labels, handlers, locale) {
     const parts = nativeParts(row);
-    if (!parts || view.descendants === 0) {
+    const handoff = view.handoff ?? [];
+    if (!parts || view.descendants === 0 && handoff.length === 0) {
       clearSidebarThreadTreeRow(api, row);
       return false;
     }
     const { item } = parts;
     const ownerDocument = row.ownerDocument;
     clearNativeRoot(api, row, item);
+    clearHandoff(item);
     const metrics = metricsFor(api.id, row, item);
     setMark(api, item, "anchor", true);
     let container = ownedChild(item, SIDEBAR_TREE_VIRTUAL_ATTRIBUTE);
@@ -1135,27 +1420,22 @@
     }
     if (container.getAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE) !== view.threadId)
       container.setAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE, view.threadId);
+    container.toggleAttribute(SIDEBAR_TREE_RAIL_ATTRIBUTE, handoff.length > 0);
     currentHandlers.set(container, handlers);
     currentLabels.set(container, labels);
     applyMetrics(container, metrics);
     if (item.firstElementChild !== container) api.dom.mount(container, item, "prepend");
-    rebuild(container, presentationOf(view, true, locale), () => {
-      const { element, children } = branch(
-        ownerDocument,
-        {
-          threadId: view.threadId,
-          depth: 0,
-          status: view.status,
-          descendants: view.descendants,
-          expanded: view.expanded,
-          rollup: view.rollup,
-          activity: view.activity,
-          ...view.root
-        },
-        labels
+    const presentation = handoff.length === 0 ? presentationOf(view, true, locale) : unitsPresentation([view, ...handoff], locale);
+    rebuild(container, presentation, () => {
+      const units = [view, ...handoff];
+      return units.map(
+        (unit, index) => unitBranch(
+          ownerDocument,
+          unit,
+          labels,
+          handoff.length === 0 ? null : railPlace(index, units.length, true)
+        )
       );
-      if (children) fillChildren(ownerDocument, children, view.nodes, labels);
-      return [element];
     });
     return true;
   }
@@ -1165,6 +1445,9 @@
     ownedChild(item, SIDEBAR_TREE_CHILDREN_ATTRIBUTE)?.remove();
     setMark(api, item, "root-collapsed", false);
     setMark(api, item, "root-expanded", false);
+  }
+  function clearHandoff(item) {
+    ownedChild(item, SIDEBAR_TREE_HANDOFF_ATTRIBUTE)?.remove();
   }
   function clearVirtual(api, item) {
     ownedChild(item, SIDEBAR_TREE_VIRTUAL_ATTRIBUTE)?.remove();
@@ -1177,6 +1460,7 @@
       return;
     }
     clearNativeRoot(api, row, item);
+    clearHandoff(item);
     clearVirtual(api, item);
   }
   function setSidebarThreadTreeRowHidden(api, row, hidden) {
@@ -1248,6 +1532,10 @@
     if (status === "unknown") return "unknown";
     return "idle";
   }
+  function backendOf(api) {
+    const backend = api.backend;
+    return backend && typeof backend.invoke === "function" ? backend : null;
+  }
   function defaultIsRowListVisible(row) {
     const list = row.closest('[role="listitem"]')?.parentElement;
     if (!list) return false;
@@ -1301,6 +1589,16 @@
     const listIds = /* @__PURE__ */ new WeakMap();
     let nextListId = 0;
     let lastTouchedRows = /* @__PURE__ */ new Set();
+    const backend = backendOf(api);
+    const handoffSource = backend ? new HandoffSource({
+      invoke: (method, params) => backend.invoke(method, params),
+      onChange: () => {
+        scheduleApply();
+      },
+      visible: () => root.visibilityState !== "hidden",
+      timers: view
+    }) : null;
+    let rowThreadIds = null;
     const saveExpanded = () => {
       try {
         storage?.setItem(
@@ -1487,11 +1785,26 @@
           order: 0
         });
       }
+      const handoffs = handoffSource?.snapshot;
+      const handoffInfo = (threadId) => handoffs && Object.hasOwn(handoffs.threads, threadId) ? handoffs.threads[threadId] : void 0;
+      const members = handoffMembers(handoffs?.links ?? []);
+      handoffSource?.want([...members].filter((threadId) => !Object.hasOwn(nodes, threadId)));
+      for (const threadId of members) {
+        if (threads.has(threadId)) continue;
+        const info = handoffInfo(threadId);
+        if (!info && !rows.has(threadId)) continue;
+        threads.set(threadId, {
+          status: mapTreeStatus(info?.status ?? "idle"),
+          archived: false,
+          order: 0
+        });
+      }
       const plans = planSidebarThreadTree({
         parents,
         threads,
         rows: planned,
-        expanded: (threadId) => expanded.has(threadId)
+        expanded: (threadId) => expanded.has(threadId),
+        handoffs: handoffs?.links ?? []
       });
       const broken = /* @__PURE__ */ new Set();
       for (const row of planned) {
@@ -1512,21 +1825,24 @@
         };
       };
       const nativeTitle = (threadId) => rows.get(threadId)?.[0]?.getAttribute(TITLE_ATTRIBUTE)?.trim() || void 0;
+      const nativeAgent = (threadId) => rows.get(threadId)?.[0]?.querySelector(`[${AGENT_ICON_ATTRIBUTE}]`)?.getAttribute(AGENT_ICON_ATTRIBUTE)?.trim() || void 0;
       const display = (threadId) => {
         const node = Object.hasOwn(nodes, threadId) ? nodes[threadId] : void 0;
-        const harnessId = node?.harnessId ?? "codex";
+        const info = handoffInfo(threadId);
+        const harnessId = node?.harnessId ?? nativeAgent(threadId) ?? info?.agent ?? "codex";
         const harness = harnessInfo(harnessId);
         return {
-          title: nativeTitle(threadId) ?? (node?.title?.trim() || void 0) ?? harness.name,
+          title: nativeTitle(threadId) ?? (node?.title?.trim() || void 0) ?? (info?.title?.trim() || void 0) ?? harness.name,
           agent: harnessId,
           harness,
           current: threadId === current
         };
       };
-      const viewOf = (tree) => ({
+      const viewOf = (tree, handoff = []) => ({
         ...tree,
         nodes: tree.nodes.map((node) => ({ ...node, ...display(node.threadId) })),
-        root: display(tree.threadId)
+        root: display(tree.threadId),
+        ...handoff.length > 0 ? { handoff: handoff.map((unit) => viewOf(unit)) } : {}
       });
       const locale = detectLocale(root);
       const labels = sidebarThreadTreeLabels(locale);
@@ -1544,7 +1860,7 @@
         if (plan.kind === "root" || plan.kind === "virtual") {
           setSidebarThreadTreeRowHidden(api, row.element, false);
           const render = plan.kind === "root" ? renderSidebarThreadTreeRoot : renderSidebarThreadTreeVirtual;
-          render(api, row.element, viewOf(plan.tree), labels, handlers, locale);
+          render(api, row.element, viewOf(plan.tree, plan.handoff), labels, handlers, locale);
           continue;
         }
         clearSidebarThreadTreeRow(api, row.element);
@@ -1614,23 +1930,40 @@
       if (disposed) return;
       disposed = true;
       cancelScheduledApply();
+      handoffSource?.dispose();
       observer?.disconnect();
       clearSidebarThreadTree(api, root);
       lastTouchedRows.clear();
     };
     api.track(() => {
       cancelScheduledApply();
+      handoffSource?.dispose();
       observer?.disconnect();
       cancelSidebarThreadTreeMotion();
     });
     api.sidebar.observeRows((current) => {
       observedRows = current;
+      const ids = /* @__PURE__ */ new Set();
+      for (const row of current) if (row.isLocal && row.threadId) ids.add(row.threadId);
+      const seen = rowThreadIds;
+      rowThreadIds = ids;
+      if (seen && [...ids].some((threadId) => !seen.has(threadId))) handoffSource?.refresh();
       apply();
     });
     api.threads.watchTree((current) => {
       snapshot = current;
       apply();
     });
+    if (handoffSource) {
+      handoffSource.start();
+      root.addEventListener(
+        "visibilitychange",
+        () => {
+          if (root.visibilityState === "visible") handoffSource.refresh();
+        },
+        { signal: api.signal }
+      );
+    }
     return cleanup;
   }
 

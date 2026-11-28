@@ -1,0 +1,84 @@
+/*
+ * Context handoffs in codexhost Web's sidebar. Web draws the delegation tree itself; this keeps
+ * Threads that continue one another after a handoff next to each other, every one at its own
+ * level, and joins them on their left with the tree guides' line: it leaves the first Thread's
+ * icon with the guides' elbow turned upward, passes every Thread after it with the guides' elbow,
+ * and ends at the last one's icon. The line's place (--cxh-rail-x, --cxh-rail-w, --cxh-icon-cy,
+ * --cxh-rail-head) is measured from Web's rows.
+ *
+ * Web's elements only respond to Host-managed markers (data-cx-ext-sidebar-thread-tree-*).
+ */
+
+/* A Thread shown in a handoff group above it in the same list. */
+[data-cx-ext-sidebar-thread-tree-hidden] {
+  display: none !important;
+}
+
+/* A branch that shows its whole handoff group instead of its own row. */
+[data-cx-ext-sidebar-thread-tree-anchor] > :not([data-cx-web-ext-mount]) {
+  display: none !important;
+}
+
+.cxh-handoff {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cxh-gap, 2px);
+  min-width: 0;
+}
+
+.cxh-handoff[data-mode="root"] {
+  margin-top: var(--cxh-gap, 2px);
+}
+
+.cxh-handoff-unit {
+  position: relative;
+  min-width: 0;
+}
+
+.cxh-handoff[data-mode="root"]::before,
+.cxh-handoff-unit[data-handoff]::after {
+  content: "";
+  position: absolute;
+  inset-inline-start: var(--cxh-rail-x, -3px);
+  width: var(--cxh-rail-w, 8px);
+  pointer-events: none;
+  z-index: 1;
+  background: var(--dsw-alias-border-l2, color-mix(in srgb, currentColor 18%, transparent));
+}
+
+/* From the first Thread's icon down: the elbow turned upward, then the line. */
+.cxh-handoff[data-mode="root"]::before,
+.cxh-handoff-unit[data-handoff="first"]::after {
+  mask:
+    linear-gradient(transparent 8px, black 0) 0 0 / 1px 100% no-repeat,
+    url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 8V7Q.5 4.7 2.5 3.5L10.5 .5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
+      0 0 / 100% 8px no-repeat;
+}
+
+/* Web's own first row: the line starts at its icon, above the group. */
+.cxh-handoff[data-mode="root"]::before {
+  top: calc(-1 * var(--cxh-rail-head, 18px));
+  height: var(--cxh-rail-head, 18px);
+}
+
+.cxh-handoff-unit[data-handoff="first"]::after {
+  top: var(--cxh-icon-cy, 16px);
+  bottom: calc(-1 * var(--cxh-gap, 2px));
+}
+
+/* Every later Thread branches off the line; the last one ends it. */
+.cxh-handoff-unit:is([data-handoff="middle"], [data-handoff="last"])::after {
+  --cxh-stem-end: 0px;
+  top: 0;
+  bottom: calc(-1 * var(--cxh-gap, 2px));
+  mask:
+    linear-gradient(black, black) 0 0 / 1px calc(100% - var(--cxh-stem-end)) no-repeat,
+    url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 0V1Q.5 3.3 2.5 4.5L10.5 7.5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
+      0 calc(var(--cxh-icon-cy, 16px) - 8px) / 100% 8px no-repeat;
+}
+
+.cxh-handoff-unit[data-handoff="last"]::after {
+  --cxh-stem-end: 8px;
+  bottom: calc(100% - var(--cxh-icon-cy, 16px));
+}

@@ -1,7 +1,8 @@
 /**
  * The part of codexhost's `@codexhost/shared-contracts` this extension is built against: the
- * Desktop extension API v1 and the Thread tree it reads. Copied from BytePioneer-AI/codex-host
- * (`packages/shared-contracts`, LGPL-3.0-only) so the extension builds on its own.
+ * Desktop extension API v1 and the Thread tree it reads, the Web extension API and the backend
+ * context. Copied from BytePioneer-AI/codex-host (`packages/shared-contracts`, LGPL-3.0-only) so
+ * the extension builds on its own.
  *
  * The bundle uses only the types. The tests use the schemas to check their fixtures.
  */
@@ -86,3 +87,51 @@ export interface DesktopExtensionDefinitionV1 {
   ): void | DesktopExtensionDispose | Promise<void | DesktopExtensionDispose>;
 }
 export type DesktopExtensionDefine = (definition: DesktopExtensionDefinitionV1) => void;
+
+export type JsonValue =
+  string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+
+/** `backend.invoke`, which Desktop and Web offer to an extension that declares a backend. */
+export interface HostExtensionBackendApi {
+  invoke(method: string, params?: JsonValue): Promise<JsonValue>;
+}
+
+/**
+ * What Desktop hands an extension at run time, beyond `DesktopExtensionApiV1`
+ * (`packages/renderer-extension/src/desktop-extension-api.ts`). Only the part this extension uses.
+ */
+export interface DesktopExtensionRuntimeApiV1 extends DesktopExtensionApiV1 {
+  readonly backend: HostExtensionBackendApi;
+}
+
+/** `packages/shared-contracts/src/web-native-extensions.ts`: the API of a Web extension. */
+export const WEB_EXTENSION_REGIONS = ["app", "topbar", "sidebar", "conversation"] as const;
+export type WebExtensionRegion = (typeof WEB_EXTENSION_REGIONS)[number];
+export type WebExtensionMount = { container: HTMLElement; dispose: () => void };
+export interface WebExtensionApi {
+  readonly id: string;
+  readonly signal: AbortSignal;
+  readonly apiVersion: 1;
+  dom: {
+    /** HTMLElement parent or a stable data-cx-region value. Returns undefined if absent. */
+    mount(
+      target: HTMLElement | WebExtensionRegion,
+      position?: "append" | "prepend",
+    ): WebExtensionMount | undefined;
+    mark(target: Element, name: string): void;
+    unmark(target: Element, name: string): void;
+  };
+  track(dispose: () => void | Promise<void>): void;
+  backend: HostExtensionBackendApi;
+}
+
+/** `packages/shared-contracts/src/desktop-extensions.ts`: what a backend's `activate(ctx)` gets. */
+export interface HostExtensionBackendContext {
+  readonly extensionId: string;
+  readonly extensionDir: string;
+  readonly dataDir: string;
+  readSettings(): Promise<Record<string, unknown>>;
+  writeSettings(values: Record<string, unknown>): Promise<Record<string, unknown>>;
+  handle(method: string, handler: (params: unknown) => unknown | Promise<unknown>): void;
+}

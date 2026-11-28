@@ -6,7 +6,12 @@
  * Recents. Within a list, a tree appears once, where its topmost member in that list stands: on
  * the root's own row when that is the topmost, otherwise on a row codexhost draws for the root.
  * Members whose rows the tree replaces are hidden.
+ *
+ * Trees whose roots continue one another after a context handoff form a handoff group: the trees
+ * stand next to each other at their own level, the one that received context most recently
+ * first. A group is placed like a tree, where its topmost member in the list stands.
  */
+import { handoffChains, type HandoffLink } from "./handoff.js";
 
 export type SidebarThreadTreeStatus = "pending" | "running" | "unknown" | "idle";
 
@@ -82,24 +87,32 @@ export interface SidebarThreadTreeRowInput {
 }
 
 export type SidebarThreadTreeRowPlan =
-  /** The row is the root and shows its tree. */
-  | { kind: "root"; tree: SidebarThreadTreeRoot }
-  /** The row is the topmost member of a tree whose root row is elsewhere or not mounted. */
-  | { kind: "virtual"; tree: SidebarThreadTreeRoot }
-  /** The row's Thread is shown in a tree above it in the same list. */
+  /**
+   * The row is the root and shows its tree. With `handoff`, the trees of the Threads it continues
+   * follow it, at its level.
+   */
+  | { kind: "root"; tree: SidebarThreadTreeRoot; handoff?: SidebarThreadTreeRoot[] }
+  /**
+   * The row is the topmost member of a tree whose root row is elsewhere or not mounted, or of a
+   * handoff group that does not start with this row's Thread.
+   */
+  | { kind: "virtual"; tree: SidebarThreadTreeRoot; handoff?: SidebarThreadTreeRoot[] }
+  /** The row's Thread is shown in a tree or handoff group above it in the same list. */
   | { kind: "hidden"; rootId: string }
   | { kind: "plain" };
 
 /**
  * Plans every mounted row. Threads the Host has not described and archived Threads are left out
  * of trees, with everything below them; such a Thread's descendants form their own trees. A
- * Thread whose ancestry loops is left as it is.
+ * Thread whose ancestry loops is left as it is. A handoff joins the trees of two Threads that
+ * are shown at the top level; a Thread shown under a parent stays in its parent's tree.
  */
 export function planSidebarThreadTree(input: {
   parents: Readonly<Record<string, string>>;
   threads: ReadonlyMap<string, SidebarThreadTreeThread>;
   rows: readonly SidebarThreadTreeRowInput[];
   expanded(threadId: string): boolean;
+  handoffs?: readonly HandoffLink[];
 }): Map<string, SidebarThreadTreeRowPlan> {
   const { threads } = input;
 
@@ -209,10 +222,37 @@ export function planSidebarThreadTree(input: {
     return tree;
   };
 
+  /** Each handoff group's trees in display order, by the root of each of its trees. */
+  const groups = new Map<string, SidebarThreadTreeRoot[]>();
+  const chains = handoffChains(
+    input.handoffs ?? [],
+    (threadId) => showable(threadId) && topOf(threadId) === threadId,
+  );
+  for (const chain of chains) {
+    const units = chain.map(treeOf);
+    for (const unit of units) groups.set(unit.threadId, units);
+  }
+
   const plans = new Map<string, SidebarThreadTreeRowPlan>();
   const placed = new Set<string>();
   for (const row of input.rows) {
     const rootId = topOf(row.threadId);
+    const units = showable(rootId) ? groups.get(rootId) : undefined;
+    const head = units?.[0];
+    if (units && head) {
+      const group = `${row.list}\u0000${head.threadId}`;
+      if (placed.has(group)) {
+        plans.set(row.key, { kind: "hidden", rootId: head.threadId });
+        continue;
+      }
+      placed.add(group);
+      plans.set(row.key, {
+        kind: row.threadId === head.threadId ? "root" : "virtual",
+        tree: head,
+        handoff: units.slice(1),
+      });
+      continue;
+    }
     // topOf stops at the row's own Thread when that is not showable: its children form their
     // own trees, under their own rows.
     const tree = showable(rootId) ? treeOf(rootId) : null;

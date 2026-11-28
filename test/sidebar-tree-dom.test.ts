@@ -42,7 +42,10 @@ afterEach(() => {
   window.localStorage.removeItem(SIDEBAR_THREAD_TREE_EXPANDED_KEY);
 });
 
-function createHarness(options: SidebarThreadTreeOptions = {}) {
+function createHarness(
+  options: SidebarThreadTreeOptions = {},
+  backend?: { invoke(method: string, params?: unknown): Promise<unknown> },
+) {
   const abort = new AbortController();
   const teardowns = new Set<() => void>();
   const mounted = new Set<Element>();
@@ -51,7 +54,8 @@ function createHarness(options: SidebarThreadTreeOptions = {}) {
   let onTree: ((snapshot: ThreadTreeSnapshot) => void) | undefined;
   const openThread = vi.fn(async (_threadId: string): Promise<void> => undefined);
 
-  const api: DesktopExtensionApiV1 = {
+  const api: DesktopExtensionApiV1 & { backend?: typeof backend } = {
+    ...(backend ? { backend } : {}),
     id: "sidebar-thread-tree",
     apiVersion: 1,
     signal: abort.signal,
@@ -447,9 +451,7 @@ describe("sidebar-thread-tree DOM behavior", () => {
       },
     });
 
-    const toggle = parent.row.element.querySelector(
-      `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
-    );
+    const toggle = parent.row.element.querySelector(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`);
     expect(toggle?.previousElementSibling).toBe(spacer);
     expect(toggle?.nextElementSibling).toBe(parent.icon);
     expect(parent.icon.nextElementSibling).toBe(parent.trigger);
@@ -524,7 +526,9 @@ describe("sidebar-thread-tree DOM behavior", () => {
     });
     if (!options.childActive)
       must(
-        parent.row.element.querySelector<HTMLElement>(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`),
+        parent.row.element.querySelector<HTMLElement>(
+          `[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}="parent"]`,
+        ),
         "tree toggle",
       ).click();
     const drawn = must(
@@ -612,7 +616,9 @@ describe("sidebar-thread-tree DOM behavior", () => {
     });
 
     drawn.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
-    const buttons = [...drawn.querySelectorAll<HTMLButtonElement>(`.${SIDEBAR_TREE_ACTIONS_CLASS} button`)];
+    const buttons = [
+      ...drawn.querySelectorAll<HTMLButtonElement>(`.${SIDEBAR_TREE_ACTIONS_CLASS} button`),
+    ];
     expect(buttons).toHaveLength(1);
     const menu = must(buttons[0], "menu button");
     expect(menu.hasAttribute(SIDEBAR_TREE_MENU_ATTRIBUTE)).toBe(true);
@@ -745,5 +751,136 @@ describe("sidebar-thread-tree DOM behavior", () => {
       row.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE),
     );
     expect(shown.sort()).toEqual(["child-elsewhere", "child-unread"]);
+  });
+});
+
+describe("context handoffs on Desktop", () => {
+  const CLAUDE = harnessIdSchema.parse("claude-code");
+
+  async function settle(): Promise<void> {
+    for (let index = 0; index < 4; index += 1) await new Promise((done) => setTimeout(done, 20));
+  }
+
+  function sidebar(): HTMLElement {
+    const scroll = document.createElement("div");
+    scroll.setAttribute("data-app-action-sidebar-scroll", "");
+    const list = document.createElement("div");
+    scroll.append(list);
+    document.body.append(scroll);
+    return list;
+  }
+
+  it("keeps the Thread that received context on its row and the older one right after it, joined by the rail", async () => {
+    document.documentElement.lang = "zh-CN";
+    const invoke = vi.fn(async () => ({
+      links: [{ target: "claude", source: "codex", at: 5 }],
+      threads: { codex: { title: "评估第三方支付 SDK", agent: "codex", status: "idle" } },
+    }));
+    const harness = createHarness({}, { invoke });
+    const list = sidebar();
+    const claude = makeListRow(list, "claude", "评估第三方支付 SDK", {
+      agentIcon: "claude-code",
+    });
+    const other = makeListRow(list, "other", "整理支付接入文档", { agentIcon: "claude-code" });
+    const codex = makeListRow(list, "codex", "评估第三方支付 SDK", { agentIcon: "codex" });
+    harness.setRows([claude.row, other.row, codex.row]);
+    harness.setTree({ revision: 1, truncated: false, parents: {}, nodes: {} });
+    await settle();
+
+    expect(invoke).toHaveBeenCalledWith(
+      "handoffs",
+      expect.objectContaining({ describe: expect.any(Array) }),
+    );
+    const group = claude.item.querySelector<HTMLElement>("[data-codexhost-sidebar-tree-handoff]");
+    expect(group).not.toBeNull();
+    // Without a tree of its own, the group starts the rail at the native row's icon.
+    expect(group?.hasAttribute("data-handoff-head")).toBe(true);
+    const moved = group?.querySelector<HTMLElement>(`[${SIDEBAR_TREE_NODE_ATTRIBUTE}="codex"]`);
+    expect(moved?.closest(".cxh-tree-branch")?.getAttribute("data-handoff")).toBe("last");
+    expect(moved?.textContent).toContain("评估第三方支付 SDK");
+    // Same level as Desktop's rows: no indent.
+    expect(
+      moved?.closest<HTMLElement>(".cxh-tree-branch")?.style.getPropertyValue("--cxh-indent"),
+    ).toBe("0px");
+    expect(codex.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(true);
+    expect(other.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(false);
+    expect(claude.row.element.querySelector(`[${SIDEBAR_TREE_TOGGLE_ATTRIBUTE}]`)).toBeNull();
+
+    must(moved, "moved row").click();
+    expect(harness.openThread).toHaveBeenCalledWith("codex");
+  });
+
+  it("draws the whole group in place of the older Thread's row when that sorts first", async () => {
+    const invoke = vi.fn(async () => ({
+      links: [{ target: "claude", source: "codex", at: 5 }],
+      threads: {},
+    }));
+    const harness = createHarness({}, { invoke });
+    const list = sidebar();
+    const codex = makeListRow(list, "codex", "Plan the run", { agentIcon: "codex" });
+    const claude = makeListRow(list, "claude", "Plan the run", { agentIcon: "claude-code" });
+    harness.setRows([codex.row, claude.row]);
+    harness.setTree({ revision: 1, truncated: false, parents: {}, nodes: {} });
+    await settle();
+
+    expect(codex.item.hasAttribute("data-cx-sidebar-thread-tree-anchor")).toBe(true);
+    const drawn = codex.item.querySelector<HTMLElement>(`[${SIDEBAR_TREE_VIRTUAL_ATTRIBUTE}]`);
+    expect(drawn?.hasAttribute("data-handoff")).toBe(true);
+    const places = [
+      ...(drawn?.querySelectorAll<HTMLElement>(":scope > .cxh-tree-branch") ?? []),
+    ].map((branch) => [
+      branch
+        .querySelector(`[${SIDEBAR_TREE_NODE_ATTRIBUTE}]`)
+        ?.getAttribute(SIDEBAR_TREE_NODE_ATTRIBUTE),
+      branch.getAttribute("data-handoff"),
+    ]);
+    expect(places).toEqual([
+      ["claude", "first"],
+      ["codex", "last"],
+    ]);
+    expect(claude.item.hasAttribute("data-cx-sidebar-thread-tree-hidden")).toBe(true);
+  });
+
+  it("follows a delegation tree of the first Thread and draws a Thread Desktop does not list from the backend", async () => {
+    const invoke = vi.fn(async (_method: string, params?: unknown) => ({
+      links: [{ target: "claude", source: "codex", at: 5 }],
+      threads: (params as { describe?: string[] } | undefined)?.describe?.includes("codex")
+        ? { codex: { title: "Old plan", agent: "codex", status: "running" } }
+        : {},
+    }));
+    const harness = createHarness({}, { invoke });
+    const list = sidebar();
+    const claude = makeListRow(list, "claude", "New plan", { agentIcon: "claude-code" });
+    const child = makeListRow(list, "child", "Sub task", { agentIcon: "codex" });
+    harness.setRows([claude.row, child.row]);
+    harness.setTree({
+      revision: 1,
+      truncated: false,
+      parents: { child: "claude" },
+      nodes: {
+        claude: makeNode(CLAUDE, "idle", "New plan"),
+        child: makeNode(CODEX, "running", "Sub task"),
+      },
+    });
+    await settle();
+
+    expect(invoke).toHaveBeenLastCalledWith("handoffs", { describe: ["codex"] });
+    // The first Thread's own tree comes first and starts the rail; the older Thread follows.
+    const summary = claude.item.querySelector<HTMLElement>(
+      `[${SIDEBAR_TREE_SUMMARY_ATTRIBUTE}="claude"]`,
+    );
+    expect(summary?.hasAttribute("data-handoff-head")).toBe(true);
+    const group = claude.item.querySelector<HTMLElement>("[data-codexhost-sidebar-tree-handoff]");
+    expect(group?.hasAttribute("data-handoff-head")).toBe(false);
+    expect(summary?.nextElementSibling).toBe(group);
+    const drawn = group?.querySelector<HTMLElement>(`[${SIDEBAR_TREE_NODE_ATTRIBUTE}="codex"]`);
+    expect(drawn?.textContent).toContain("Old plan");
+    expect(drawn?.querySelector('.cxh-tree-status[data-status="running"]')).not.toBeNull();
+    // A Thread without a Desktop row opens Desktop's own menu from its "…" button.
+    drawn?.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    expect(drawn?.querySelector(`[${SIDEBAR_TREE_MENU_ATTRIBUTE}]`)).not.toBeNull();
+
+    harness.dispose();
+    expect(claude.item.querySelector("[data-codexhost-sidebar-tree-handoff]")).toBeNull();
   });
 });

@@ -1,10 +1,12 @@
 import type {
   DesktopExtensionApiV1,
+  DesktopExtensionRuntimeApiV1,
   DesktopSidebarRow,
   ThreadTreeNode,
   ThreadTreeSnapshot,
   ThreadTreeStatus,
 } from "@codexhost/shared-contracts";
+import { HandoffSource, handoffMembers, type HandoffThreadStatus } from "./handoff.js";
 import {
   SIDEBAR_TREE_OWNED_SELECTOR,
   canRenderSidebarThreadTree,
@@ -35,10 +37,13 @@ import {
 } from "./tree.js";
 
 /**
- * Shows the Threads a sidebar Thread delegated under it, as the Web sidebar tree does.
+ * Shows the Threads a sidebar Thread delegated under it, as the Web sidebar tree does, and keeps
+ * Threads that continue one another after a context handoff next to each other.
  *
  * The parent relation and Thread states come from `api.threads.watchTree`, and mounted sidebar
- * rows come from `api.sidebar.observeRows`. Rows of other Hosts are untouched.
+ * rows come from `api.sidebar.observeRows`. Handoffs come from the extension's backend
+ * (`api.backend`), which also describes the Threads of a handoff the tree does not. Rows of other
+ * Hosts are untouched.
  */
 
 const SIDEBAR_SELECTOR = "[data-app-action-sidebar-scroll]";
@@ -138,11 +143,17 @@ function isDeleted(
   return node.status === "unknown" && !node.title?.trim() && !rows.has(threadId);
 }
 
-function mapTreeStatus(status: ThreadTreeStatus): SidebarThreadTreeStatus {
+function mapTreeStatus(status: ThreadTreeStatus | HandoffThreadStatus): SidebarThreadTreeStatus {
   if (status === "waiting") return "pending";
   if (status === "running") return "running";
   if (status === "unknown") return "unknown";
   return "idle";
+}
+
+/** The extension's backend, when the Host runs it. */
+function backendOf(api: DesktopExtensionApiV1): DesktopExtensionRuntimeApiV1["backend"] | null {
+  const backend = (api as Partial<DesktopExtensionRuntimeApiV1>).backend;
+  return backend && typeof backend.invoke === "function" ? backend : null;
 }
 
 function defaultIsRowListVisible(row: HTMLElement): boolean {
@@ -216,6 +227,21 @@ export function activate(
   const listIds = new WeakMap<Element, string>();
   let nextListId = 0;
   let lastTouchedRows = new Set<HTMLElement>();
+
+  const backend = backendOf(api);
+  /** Context handoffs, from the extension's backend when the Host runs it. */
+  const handoffSource = backend
+    ? new HandoffSource({
+        invoke: (method, params) => backend.invoke(method, params),
+        onChange: () => {
+          scheduleApply();
+        },
+        visible: () => root.visibilityState !== "hidden",
+        timers: view,
+      })
+    : null;
+  /** Threads with a mounted row, to notice a Thread a handoff has just started. */
+  let rowThreadIds: Set<string> | null = null;
 
   const saveExpanded = (): void => {
     try {
@@ -457,11 +483,31 @@ export function activate(
         order: 0,
       });
     }
+    // The tree describes only Threads with delegations; the backend describes the other Threads
+    // of a handoff. One that neither Desktop lists nor the backend knows is left out.
+    const handoffs = handoffSource?.snapshot;
+    const handoffInfo = (threadId: string) =>
+      handoffs && Object.hasOwn(handoffs.threads, threadId)
+        ? handoffs.threads[threadId]
+        : undefined;
+    const members = handoffMembers(handoffs?.links ?? []);
+    handoffSource?.want([...members].filter((threadId) => !Object.hasOwn(nodes, threadId)));
+    for (const threadId of members) {
+      if (threads.has(threadId)) continue;
+      const info = handoffInfo(threadId);
+      if (!info && !rows.has(threadId)) continue;
+      threads.set(threadId, {
+        status: mapTreeStatus(info?.status ?? "idle"),
+        archived: false,
+        order: 0,
+      });
+    }
     const plans = planSidebarThreadTree({
       parents,
       threads,
       rows: planned,
       expanded: (threadId) => expanded.has(threadId),
+      handoffs: handoffs?.links ?? [],
     });
     // A tree whose place is a row it cannot be attached to shows nothing in that list, so
     // nothing may be hidden for it there.
@@ -487,21 +533,37 @@ export function activate(
 
     const nativeTitle = (threadId: string): string | undefined =>
       rows.get(threadId)?.[0]?.getAttribute(TITLE_ATTRIBUTE)?.trim() || undefined;
+    /** The agent codexhost marks on a Thread's Desktop row. */
+    const nativeAgent = (threadId: string): string | undefined =>
+      rows
+        .get(threadId)?.[0]
+        ?.querySelector(`[${AGENT_ICON_ATTRIBUTE}]`)
+        ?.getAttribute(AGENT_ICON_ATTRIBUTE)
+        ?.trim() || undefined;
     const display = (threadId: string): SidebarThreadTreeDisplay => {
       const node = Object.hasOwn(nodes, threadId) ? nodes[threadId] : undefined;
-      const harnessId = node?.harnessId ?? "codex";
+      const info = handoffInfo(threadId);
+      const harnessId = node?.harnessId ?? nativeAgent(threadId) ?? info?.agent ?? "codex";
       const harness = harnessInfo(harnessId);
       return {
-        title: nativeTitle(threadId) ?? (node?.title?.trim() || undefined) ?? harness.name,
+        title:
+          nativeTitle(threadId) ??
+          (node?.title?.trim() || undefined) ??
+          (info?.title?.trim() || undefined) ??
+          harness.name,
         agent: harnessId,
         harness,
         current: threadId === current,
       };
     };
-    const viewOf = (tree: SidebarThreadTreeRoot): SidebarThreadTreeView => ({
+    const viewOf = (
+      tree: SidebarThreadTreeRoot,
+      handoff: readonly SidebarThreadTreeRoot[] = [],
+    ): SidebarThreadTreeView => ({
       ...tree,
       nodes: tree.nodes.map((node) => ({ ...node, ...display(node.threadId) })),
       root: display(tree.threadId),
+      ...(handoff.length > 0 ? { handoff: handoff.map((unit) => viewOf(unit)) } : {}),
     });
     const locale = detectLocale(root);
     const labels = sidebarThreadTreeLabels(locale);
@@ -528,7 +590,7 @@ export function activate(
         setSidebarThreadTreeRowHidden(api, row.element, false);
         const render =
           plan.kind === "root" ? renderSidebarThreadTreeRoot : renderSidebarThreadTreeVirtual;
-        render(api, row.element, viewOf(plan.tree), labels, handlers, locale);
+        render(api, row.element, viewOf(plan.tree, plan.handoff), labels, handlers, locale);
         continue;
       }
       clearSidebarThreadTreeRow(api, row.element);
@@ -617,6 +679,7 @@ export function activate(
     if (disposed) return;
     disposed = true;
     cancelScheduledApply();
+    handoffSource?.dispose();
     observer?.disconnect();
     clearSidebarThreadTree(api, root);
     lastTouchedRows.clear();
@@ -624,18 +687,36 @@ export function activate(
 
   api.track(() => {
     cancelScheduledApply();
+    handoffSource?.dispose();
     observer?.disconnect();
     cancelSidebarThreadTreeMotion();
   });
 
   api.sidebar.observeRows((current) => {
     observedRows = current;
+    // A Thread that just got a row may have been started by a handoff.
+    const ids = new Set<string>();
+    for (const row of current) if (row.isLocal && row.threadId) ids.add(row.threadId);
+    const seen = rowThreadIds;
+    rowThreadIds = ids;
+    if (seen && [...ids].some((threadId) => !seen.has(threadId))) handoffSource?.refresh();
     apply();
   });
   api.threads.watchTree((current) => {
     snapshot = current;
     apply();
   });
+
+  if (handoffSource) {
+    handoffSource.start();
+    root.addEventListener(
+      "visibilitychange",
+      () => {
+        if (root.visibilityState === "visible") handoffSource.refresh();
+      },
+      { signal: api.signal },
+    );
+  }
 
   return cleanup;
 }

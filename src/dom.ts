@@ -1,4 +1,5 @@
 import type { DesktopExtensionApiV1 } from "@codexhost/shared-contracts";
+import { handoffRail } from "./handoff.js";
 import { SIDEBAR_TREE_MOTION_ATTRIBUTE, cancelSidebarThreadTreeMotion } from "./motion.js";
 import {
   SIDEBAR_THREAD_TREE_MAX_INDENT_DEPTH,
@@ -18,6 +19,11 @@ import {
  * of a member's row lives in that member's listitem, whose native content is hidden via the
  * `anchor` mark; a native row shown elsewhere in a tree has its listitem hidden via the `hidden`
  * mark.
+ *
+ * A handoff group adds the trees of the Threads the first one continues, at its level: after the
+ * first tree in a native root's listitem, or after it in the tree drawn in place of a member's
+ * row. Their rail is drawn by `desktop.css` from `data-handoff` attributes on the elements it
+ * passes, as the tree guides are.
  */
 
 export const SIDEBAR_TREE_TOGGLE_CLASS = "cxh-tree-toggle";
@@ -33,6 +39,7 @@ export const SIDEBAR_TREE_STATUS_CLASS = "cxh-tree-status";
 export const SIDEBAR_TREE_VIRTUAL_CLASS = "cxh-tree-virtual";
 export const SIDEBAR_TREE_ACTIONS_CLASS = "cxh-tree-actions";
 export const SIDEBAR_TREE_ACTION_CLASS = "cxh-tree-action";
+export const SIDEBAR_TREE_HANDOFF_CLASS = "cxh-tree-handoff";
 
 /** Each level indents children by the Web tree's 24px. */
 export const SIDEBAR_TREE_INDENT_PX = 24;
@@ -54,12 +61,19 @@ export const SIDEBAR_TREE_ACTION_ATTRIBUTE = "data-codexhost-sidebar-tree-action
 export const SIDEBAR_TREE_MENU_ATTRIBUTE = "data-codexhost-sidebar-tree-menu";
 /** Identity of codexhost rows across rebuilds, for focus and for expand and collapse motion. */
 export const SIDEBAR_TREE_KEY_ATTRIBUTE = "data-codexhost-sidebar-tree-key";
+/** The trees that follow a native root's own tree in its handoff group. */
+export const SIDEBAR_TREE_HANDOFF_ATTRIBUTE = "data-codexhost-sidebar-tree-handoff";
+/** Where an element sits on the handoff rail: `first`, `middle` or `last`. */
+export const SIDEBAR_TREE_RAIL_ATTRIBUTE = "data-handoff";
+/** The element after a native root row, which starts the rail at that row's icon. */
+export const SIDEBAR_TREE_RAIL_HEAD_ATTRIBUTE = "data-handoff-head";
 /** Every node this module adds carries one of these, so observers can ignore its own writes. */
 export const SIDEBAR_TREE_OWNED_SELECTOR = [
   SIDEBAR_TREE_TOGGLE_ATTRIBUTE,
   SIDEBAR_TREE_SUMMARY_ATTRIBUTE,
   SIDEBAR_TREE_CHILDREN_ATTRIBUTE,
   SIDEBAR_TREE_VIRTUAL_ATTRIBUTE,
+  SIDEBAR_TREE_HANDOFF_ATTRIBUTE,
   SIDEBAR_TREE_MOTION_ATTRIBUTE,
 ]
   .map((name) => `[${name}]`)
@@ -104,6 +118,8 @@ export interface SidebarThreadTreeView extends Omit<SidebarThreadTreeRoot, "node
   nodes: SidebarThreadTreeNodeView[];
   /** The root as a codexhost row, used when the tree stands in for another member's row. */
   root: SidebarThreadTreeDisplay;
+  /** The trees of the Threads this one continues after context handoffs, in display order. */
+  handoff?: SidebarThreadTreeView[];
 }
 
 export interface SidebarThreadTreeLabels {
@@ -465,6 +481,10 @@ function applyMetrics(element: HTMLElement, metrics: TreeMetrics): void {
   setVariable(element, "--cxh-title-color", metrics.titleColor);
   // The summary text starts under the title, as in the Web sidebar.
   setVariable(element, "--cxh-summary-start", `${String(Math.max(0, metrics.titleLeft - 8))}px`);
+  // The handoff rail runs left of the icon column, with the tree guides' elbow where it fits.
+  const rail = handoffRail(metrics.iconLeft);
+  setVariable(element, "--cxh-rail-x", `${String(rail.x)}px`);
+  setVariable(element, "--cxh-rail-w", `${String(rail.width)}px`);
 }
 
 function indentOf(depth: number): string {
@@ -737,9 +757,8 @@ function fillChildren(
   }
 }
 
-function presentationOf(view: SidebarThreadTreeView, withRoot: boolean, locale: string): string {
-  return JSON.stringify([
-    locale,
+function presentationValue(view: SidebarThreadTreeView, withRoot: boolean): unknown[] {
+  return [
     view.threadId,
     view.expanded,
     view.descendants,
@@ -765,7 +784,48 @@ function presentationOf(view: SidebarThreadTreeView, withRoot: boolean, locale: 
       node.expanded,
       node.activity,
     ]),
-  ]);
+  ];
+}
+
+function presentationOf(view: SidebarThreadTreeView, withRoot: boolean, locale: string): string {
+  return JSON.stringify([locale, ...presentationValue(view, withRoot)]);
+}
+
+function unitsPresentation(units: readonly SidebarThreadTreeView[], locale: string): string {
+  return JSON.stringify([locale, units.map((unit) => presentationValue(unit, true))]);
+}
+
+type RailPlace = "first" | "middle" | "last";
+
+function railPlace(index: number, count: number, startsRail: boolean): RailPlace {
+  if (index === 0 && startsRail) return "first";
+  return index === count - 1 ? "last" : "middle";
+}
+
+/** A tree drawn whole at the top level: its root as a codexhost row, then its summary or children. */
+function unitBranch(
+  ownerDocument: Document,
+  unit: SidebarThreadTreeView,
+  labels: SidebarThreadTreeLabels,
+  place: RailPlace | null,
+): HTMLElement {
+  const { element, children } = branch(
+    ownerDocument,
+    {
+      threadId: unit.threadId,
+      depth: 0,
+      status: unit.status,
+      descendants: unit.descendants,
+      expanded: unit.expanded,
+      rollup: unit.rollup,
+      activity: unit.activity,
+      ...unit.root,
+    },
+    labels,
+  );
+  if (children) fillChildren(ownerDocument, children, unit.nodes, labels);
+  if (place) element.setAttribute(SIDEBAR_TREE_RAIL_ATTRIBUTE, place);
+  return element;
 }
 
 /** After expanding from a summary, which leaves the DOM, focus stays on its Thread's toggle. */
@@ -1036,7 +1096,10 @@ function placeToggle(
   setVariable(toggle, "top", `${String(Math.round((rowRect.height - 20) / 2))}px`);
 }
 
-/** Shows `view` on a native root row: the icon toggle and the summary or the children. */
+/**
+ * Shows `view` on a native root row: the icon toggle and the summary or the children, then the
+ * trees of the Threads it continues after context handoffs, with their rail.
+ */
 export function renderSidebarThreadTreeRoot(
   api: DesktopExtensionApiV1,
   row: HTMLElement,
@@ -1046,7 +1109,8 @@ export function renderSidebarThreadTreeRoot(
   locale: string,
 ): boolean {
   const parts = nativeParts(row);
-  if (!parts || view.descendants === 0) {
+  const handoff = view.handoff ?? [];
+  if (!parts || (view.descendants === 0 && handoff.length === 0)) {
     clearSidebarThreadTreeRow(api, row);
     return false;
   }
@@ -1054,60 +1118,104 @@ export function renderSidebarThreadTreeRoot(
   const ownerDocument = row.ownerDocument;
   clearVirtual(api, item);
   const metrics = metricsFor(api.id, row, item);
-  placeToggle(api, row, trigger, view, labels, handlers);
-  setMark(api, item, "root-expanded", view.expanded);
-  setMark(api, item, "root-collapsed", !view.expanded);
 
-  const attribute = view.expanded
-    ? SIDEBAR_TREE_CHILDREN_ATTRIBUTE
-    : SIDEBAR_TREE_SUMMARY_ATTRIBUTE;
-  ownedChild(
-    item,
-    view.expanded ? SIDEBAR_TREE_SUMMARY_ATTRIBUTE : SIDEBAR_TREE_CHILDREN_ATTRIBUTE,
-  )?.remove();
-  let container = ownedChild(item, attribute);
-  if (!container) {
-    container = ownerDocument.createElement("div");
-    if (view.expanded) {
-      container.className = SIDEBAR_TREE_CHILDREN_CLASS;
-      container.setAttribute("role", "group");
-      container.setAttribute("data-guide", "");
-      container.style.setProperty("--cxh-guide-indent", "0px");
-    } else {
-      container.className = SIDEBAR_TREE_SUMMARY_LINE_CLASS;
+  let tree: HTMLElement | null = null;
+  if (view.descendants === 0) {
+    clearNativeRoot(api, row, item);
+  } else {
+    placeToggle(api, row, trigger, view, labels, handlers);
+    setMark(api, item, "root-expanded", view.expanded);
+    setMark(api, item, "root-collapsed", !view.expanded);
+
+    const attribute = view.expanded
+      ? SIDEBAR_TREE_CHILDREN_ATTRIBUTE
+      : SIDEBAR_TREE_SUMMARY_ATTRIBUTE;
+    ownedChild(
+      item,
+      view.expanded ? SIDEBAR_TREE_SUMMARY_ATTRIBUTE : SIDEBAR_TREE_CHILDREN_ATTRIBUTE,
+    )?.remove();
+    let container = ownedChild(item, attribute);
+    if (!container) {
+      container = ownerDocument.createElement("div");
+      if (view.expanded) {
+        container.className = SIDEBAR_TREE_CHILDREN_CLASS;
+        container.setAttribute("role", "group");
+        container.setAttribute("data-guide", "");
+        container.style.setProperty("--cxh-guide-indent", "0px");
+      } else {
+        container.className = SIDEBAR_TREE_SUMMARY_LINE_CLASS;
+      }
+      wireContainer(container, api.signal);
     }
-    wireContainer(container, api.signal);
+    if (container.getAttribute(attribute) !== view.threadId)
+      container.setAttribute(attribute, view.threadId);
+    currentHandlers.set(container, handlers);
+    currentLabels.set(container, labels);
+    applyMetrics(container, metrics);
+    rebuild(container, presentationOf(view, false, locale), () => {
+      if (!view.expanded) {
+        return [
+          summaryButton(
+            ownerDocument,
+            {
+              threadId: view.threadId,
+              title: view.root.title,
+              descendants: view.descendants,
+              activity: view.activity,
+            },
+            labels,
+          ),
+        ];
+      }
+      const holder = ownerDocument.createElement("div");
+      fillChildren(ownerDocument, holder, view.nodes, labels);
+      return [...holder.childNodes];
+    });
+    tree = container;
   }
-  if (container.getAttribute(attribute) !== view.threadId)
-    container.setAttribute(attribute, view.threadId);
-  currentHandlers.set(container, handlers);
-  currentLabels.set(container, labels);
-  applyMetrics(container, metrics);
-  // React may re-insert the row's own content after this container; keep codexhost content last.
-  if (item.lastElementChild !== container) api.dom.mount(container, item, "append");
-  rebuild(container, presentationOf(view, false, locale), () => {
-    if (!view.expanded) {
-      return [
-        summaryButton(
-          ownerDocument,
-          {
-            threadId: view.threadId,
-            title: view.root.title,
-            descendants: view.descendants,
-            activity: view.activity,
-          },
-          labels,
-        ),
-      ];
+
+  let group = ownedChild(item, SIDEBAR_TREE_HANDOFF_ATTRIBUTE);
+  if (handoff.length === 0) {
+    group?.remove();
+    group = null;
+  } else {
+    if (!group) {
+      group = ownerDocument.createElement("div");
+      group.className = SIDEBAR_TREE_HANDOFF_CLASS;
+      group.setAttribute("role", "group");
+      wireContainer(group, api.signal);
     }
-    const holder = ownerDocument.createElement("div");
-    fillChildren(ownerDocument, holder, view.nodes, labels);
-    return [...holder.childNodes];
-  });
+    if (group.getAttribute(SIDEBAR_TREE_HANDOFF_ATTRIBUTE) !== view.threadId)
+      group.setAttribute(SIDEBAR_TREE_HANDOFF_ATTRIBUTE, view.threadId);
+    currentHandlers.set(group, handlers);
+    currentLabels.set(group, labels);
+    applyMetrics(group, metrics);
+    const units = handoff;
+    rebuild(group, unitsPresentation(units, locale), () =>
+      units.map((unit, index) =>
+        unitBranch(ownerDocument, unit, labels, railPlace(index, units.length, false)),
+      ),
+    );
+  }
+
+  // The rail starts at the row's icon, on the first element after the row.
+  const head = handoff.length > 0 ? (tree ?? group) : null;
+  for (const element of [tree, group]) {
+    if (element) element.toggleAttribute(SIDEBAR_TREE_RAIL_HEAD_ATTRIBUTE, element === head);
+  }
+  // React may re-insert the row's own content after these; keep codexhost content last, in order.
+  const owned = [tree, group].filter((element): element is HTMLElement => element !== null);
+  const tail = [...item.children].slice(-owned.length);
+  if (owned.some((element, index) => tail[index] !== element)) {
+    for (const element of owned) api.dom.mount(element, item, "append");
+  }
   return true;
 }
 
-/** Shows `view` in place of a member's row, whose native content is hidden meanwhile. */
+/**
+ * Shows `view` in place of a member's row, whose native content is hidden meanwhile, followed by
+ * the trees of the Threads it continues after context handoffs, with their rail.
+ */
 export function renderSidebarThreadTreeVirtual(
   api: DesktopExtensionApiV1,
   row: HTMLElement,
@@ -1117,13 +1225,15 @@ export function renderSidebarThreadTreeVirtual(
   locale: string,
 ): boolean {
   const parts = nativeParts(row);
-  if (!parts || view.descendants === 0) {
+  const handoff = view.handoff ?? [];
+  if (!parts || (view.descendants === 0 && handoff.length === 0)) {
     clearSidebarThreadTreeRow(api, row);
     return false;
   }
   const { item } = parts;
   const ownerDocument = row.ownerDocument;
   clearNativeRoot(api, row, item);
+  clearHandoff(item);
   // Measure before the native content is hidden; afterwards the list's measurement is reused.
   const metrics = metricsFor(api.id, row, item);
   setMark(api, item, "anchor", true);
@@ -1137,27 +1247,25 @@ export function renderSidebarThreadTreeVirtual(
   }
   if (container.getAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE) !== view.threadId)
     container.setAttribute(SIDEBAR_TREE_VIRTUAL_ATTRIBUTE, view.threadId);
+  container.toggleAttribute(SIDEBAR_TREE_RAIL_ATTRIBUTE, handoff.length > 0);
   currentHandlers.set(container, handlers);
   currentLabels.set(container, labels);
   applyMetrics(container, metrics);
   if (item.firstElementChild !== container) api.dom.mount(container, item, "prepend");
-  rebuild(container, presentationOf(view, true, locale), () => {
-    const { element, children } = branch(
-      ownerDocument,
-      {
-        threadId: view.threadId,
-        depth: 0,
-        status: view.status,
-        descendants: view.descendants,
-        expanded: view.expanded,
-        rollup: view.rollup,
-        activity: view.activity,
-        ...view.root,
-      },
-      labels,
+  const presentation =
+    handoff.length === 0
+      ? presentationOf(view, true, locale)
+      : unitsPresentation([view, ...handoff], locale);
+  rebuild(container, presentation, () => {
+    const units = [view, ...handoff];
+    return units.map((unit, index) =>
+      unitBranch(
+        ownerDocument,
+        unit,
+        labels,
+        handoff.length === 0 ? null : railPlace(index, units.length, true),
+      ),
     );
-    if (children) fillChildren(ownerDocument, children, view.nodes, labels);
-    return [element];
   });
   return true;
 }
@@ -1168,6 +1276,10 @@ function clearNativeRoot(api: DesktopExtensionApiV1, row: HTMLElement, item: HTM
   ownedChild(item, SIDEBAR_TREE_CHILDREN_ATTRIBUTE)?.remove();
   setMark(api, item, "root-collapsed", false);
   setMark(api, item, "root-expanded", false);
+}
+
+function clearHandoff(item: HTMLElement): void {
+  ownedChild(item, SIDEBAR_TREE_HANDOFF_ATTRIBUTE)?.remove();
 }
 
 function clearVirtual(api: DesktopExtensionApiV1, item: HTMLElement): void {
@@ -1183,6 +1295,7 @@ export function clearSidebarThreadTreeRow(api: DesktopExtensionApiV1, row: HTMLE
     return;
   }
   clearNativeRoot(api, row, item);
+  clearHandoff(item);
   clearVirtual(api, item);
 }
 

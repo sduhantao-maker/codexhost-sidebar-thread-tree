@@ -3,9 +3,10 @@
  *
  * It follows the Web sidebar tree: the icon of a row with children turns into a chevron on
  * hover and while expanded, a collapsed row carries a one-line summary inside its own block, and
- * expanded children hang from rounded elbow guides 24px per level. Colors come from Desktop's
- * tokens through var(--token, fallback). Row metrics (height, radius, icon and title columns) are
- * measured from the native rows at runtime and passed in as --cxh-* custom properties.
+ * expanded children hang from rounded elbow guides 24px per level. Threads joined by a context
+ * handoff share a rail on their left in the same line. Colors come from Desktop's tokens through
+ * var(--token, fallback). Row metrics (height, radius, icon and title columns) are measured from
+ * the native rows at runtime and passed in as --cxh-* custom properties.
  *
  * Native elements only respond to host-managed markers (data-cx-sidebar-thread-tree-*).
  */
@@ -394,6 +395,91 @@ button.cxh-tree-identity {
 }
 
 .cxh-tree-children[data-guide] > .cxh-tree-branch:last-child::before {
+  --cxh-stem-end: 8px;
+  bottom: calc(100% - var(--cxh-icon-cy));
+}
+
+/*
+ * Handoff rail. Threads that continue one another after a context handoff stand next to each
+ * other at their own level, and the tree guides' line joins them on their left: it leaves the
+ * first Thread's icon with the guides' elbow turned upward, passes every Thread after it with the
+ * guides' elbow, and ends at the last one's icon. --cxh-rail-x and --cxh-rail-w place it left of
+ * the icon column.
+ */
+.cxh-tree-handoff {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--cxh-gap, 0px);
+  margin-top: var(--cxh-gap, 0px);
+}
+
+.cxh-tree-virtual[data-handoff] {
+  display: flex;
+  flex-direction: column;
+  gap: var(--cxh-gap, 0px);
+}
+
+.cxh-tree-summary-line[data-handoff-head] {
+  position: relative;
+}
+
+:is(.cxh-tree-summary-line, .cxh-tree-children, .cxh-tree-handoff)[data-handoff-head]::after,
+.cxh-tree-branch[data-handoff]::after {
+  content: "";
+  position: absolute;
+  inset-inline-start: var(--cxh-rail-x, 15.5px);
+  width: var(--cxh-rail-w, 10.5px);
+  pointer-events: none;
+  z-index: 1;
+  background: var(
+    --color-border-heavy,
+    var(--color-border, color-mix(in srgb, currentColor 18%, transparent))
+  );
+}
+
+/* From the first Thread's icon down: the elbow turned upward, then the line. */
+:is(.cxh-tree-summary-line, .cxh-tree-children, .cxh-tree-handoff)[data-handoff-head]::after,
+.cxh-tree-branch[data-handoff="first"]::after {
+  mask:
+    linear-gradient(transparent 8px, black 0) 0 0 / 1px 100% no-repeat,
+    url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 8V7Q.5 4.7 2.5 3.5L10.5 .5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
+      0 0 / 100% 8px no-repeat;
+}
+
+/* A native first row: the summary line follows it directly, the children and the rest a gap later. */
+.cxh-tree-summary-line[data-handoff-head]::after {
+  top: calc(var(--cxh-row-h, 30px) / -2);
+  bottom: calc(-1 * var(--cxh-gap, 0px));
+}
+
+.cxh-tree-children[data-handoff-head]::after {
+  top: calc(-1 * (var(--cxh-row-h, 30px) / 2 + var(--cxh-gap, 0px)));
+  bottom: calc(-1 * var(--cxh-gap, 0px));
+}
+
+.cxh-tree-handoff[data-handoff-head]::after {
+  top: calc(-1 * (var(--cxh-row-h, 30px) / 2 + var(--cxh-gap, 0px)));
+  height: calc(var(--cxh-row-h, 30px) / 2 + var(--cxh-gap, 0px));
+}
+
+.cxh-tree-branch[data-handoff="first"]::after {
+  top: var(--cxh-icon-cy);
+  bottom: calc(-1 * var(--cxh-gap, 0px));
+}
+
+/* Every later Thread branches off the line; the last one ends it. */
+.cxh-tree-branch:is([data-handoff="middle"], [data-handoff="last"])::after {
+  --cxh-stem-end: 0px;
+  top: 0;
+  bottom: calc(-1 * var(--cxh-gap, 0px));
+  mask:
+    linear-gradient(black, black) 0 0 / 1px calc(100% - var(--cxh-stem-end)) no-repeat,
+    url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 8" preserveAspectRatio="none"><path d="M.5 0V1Q.5 3.3 2.5 4.5L10.5 7.5" fill="none" stroke="black" stroke-width="1" vector-effect="non-scaling-stroke"/></svg>')
+      0 calc(var(--cxh-icon-cy) - 8px) / 100% 8px no-repeat;
+}
+
+.cxh-tree-branch[data-handoff="last"]::after {
   --cxh-stem-end: 8px;
   bottom: calc(100% - var(--cxh-icon-cy));
 }

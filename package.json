@@ -1,7 +1,7 @@
 {
   "name": "codexhost-sidebar-thread-tree",
   "private": true,
-  "description": "codexhost Desktop extension that folds delegated Threads under their parent in the sidebar.",
+  "description": "codexhost extension for Desktop and Web that folds delegated Threads under their parent and keeps Threads joined by a context handoff side by side in the sidebar.",
   "license": "LGPL-3.0-only",
   "type": "module",
   "engines": {

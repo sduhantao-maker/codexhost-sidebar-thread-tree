@@ -160,3 +160,114 @@ describe("sidebar Thread tree placement", () => {
     expect(mostUrgentSidebarThreadStatus([])).toBe("idle");
   });
 });
+
+describe("handoff groups", () => {
+  const unit = (threadId: string, descendants = 0) => ({
+    threadId,
+    status: "idle" as const,
+    descendants,
+    expanded: false,
+    rollup: "idle" as const,
+    activity: { running: 0, pending: 0 },
+    nodes: [],
+  });
+
+  it("puts the Thread that received context first, on its own row, and hides the other's row", () => {
+    const plans = planSidebarThreadTree({
+      parents: {},
+      threads: new Map([
+        ["claude", thread()],
+        ["codex", thread()],
+        ["other", thread()],
+      ]),
+      rows: [
+        { key: "claude", threadId: "claude", list: "recents" },
+        { key: "other", threadId: "other", list: "recents" },
+        { key: "codex", threadId: "codex", list: "recents" },
+      ],
+      expanded: () => false,
+      handoffs: [{ target: "claude", source: "codex", at: 5 }],
+    });
+    expect(plans.get("claude")).toEqual({
+      kind: "root",
+      tree: unit("claude"),
+      handoff: [unit("codex")],
+    });
+    expect(plans.get("codex")).toEqual({ kind: "hidden", rootId: "claude" });
+    expect(plans.get("other")).toEqual({ kind: "plain" });
+  });
+
+  it("draws the whole group where the older Thread stands when it sorts first", () => {
+    const plans = planSidebarThreadTree({
+      parents: { child: "codex" },
+      threads: new Map([
+        ["claude", thread()],
+        ["codex", thread()],
+        ["child", thread("running")],
+      ]),
+      rows: [
+        { key: "codex", threadId: "codex", list: "recents" },
+        { key: "claude", threadId: "claude", list: "recents" },
+      ],
+      expanded: () => false,
+      handoffs: [{ target: "claude", source: "codex", at: 5 }],
+    });
+    expect(plans.get("codex")).toEqual({
+      kind: "virtual",
+      tree: unit("claude"),
+      handoff: [{ ...unit("codex", 1), rollup: "running", activity: { running: 1, pending: 0 } }],
+    });
+    expect(plans.get("claude")).toEqual({ kind: "hidden", rootId: "claude" });
+  });
+
+  it("leaves a delegated child in its parent's tree and a lone Thread alone", () => {
+    const plans = planSidebarThreadTree({
+      parents: { child: "parent" },
+      threads: new Map([
+        ["parent", thread()],
+        ["child", thread()],
+        ["claude", thread()],
+        ["solo", thread()],
+      ]),
+      rows: [
+        { key: "parent", threadId: "parent", list: "recents" },
+        { key: "claude", threadId: "claude", list: "recents" },
+        { key: "solo", threadId: "solo", list: "recents" },
+      ],
+      expanded: () => false,
+      handoffs: [
+        { target: "claude", source: "child", at: 5 },
+        { target: "solo", source: "archived-or-unknown", at: 6 },
+      ],
+    });
+    expect(plans.get("parent")).toMatchObject({ kind: "root", tree: { threadId: "parent" } });
+    expect(plans.get("parent")).not.toHaveProperty("handoff");
+    expect(plans.get("claude")).toEqual({ kind: "plain" });
+    expect(plans.get("solo")).toEqual({ kind: "plain" });
+  });
+
+  it("shows a group once in every list that has one of its Threads", () => {
+    const plans = planSidebarThreadTree({
+      parents: {},
+      threads: new Map([
+        ["claude", thread()],
+        ["codex", thread()],
+      ]),
+      rows: [
+        { key: "recent-claude", threadId: "claude", list: "recents" },
+        { key: "project-codex", threadId: "codex", list: "project" },
+      ],
+      expanded: () => false,
+      handoffs: [{ target: "claude", source: "codex", at: 5 }],
+    });
+    expect(plans.get("recent-claude")).toMatchObject({
+      kind: "root",
+      handoff: [{ threadId: "codex" }],
+    });
+    expect(plans.get("project-codex")).toMatchObject({
+      kind: "virtual",
+      tree: { threadId: "claude" },
+      handoff: [{ threadId: "codex" }],
+    });
+  });
+});

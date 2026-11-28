@@ -1,6 +1,7 @@
-// Builds the extension as codexhost's tools/build-desktop-extension.mjs does and writes
-// desktop.js and desktop.css next to manifest.json. With --zip it also packs the files the
-// manifest declares into dist/<id>.zip; the same files always give the same bytes.
+// Builds the extension with the esbuild settings of codexhost's own tools/build-desktop-extension.mjs
+// and writes every file the manifest declares next to it: desktop.js and desktop.css for Desktop,
+// web/index.mjs and web/style.css for Web, backend/index.mjs for the backend. With --zip it also
+// packs those files into dist/<id>.zip; the same files always give the same bytes.
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,16 +14,33 @@ const KiB = 1024;
 // The limits codexhost and the extension registry apply.
 const LIMITS = {
   "manifest.json": 128 * KiB,
-  "desktop.js": 2048 * KiB,
-  "desktop.css": 256 * KiB,
+  script: 2048 * KiB,
+  style: 256 * KiB,
+  license: 64 * KiB,
   icon: 128 * KiB,
   screenshot: 512 * KiB,
 };
+const DESKTOP = { script: "desktop.js", style: "desktop.css" };
+const WEB = { entry: "web/index.mjs", style: "web/style.css" };
+const BACKEND = { entry: "backend/index.mjs" };
 
 const manifest = JSON.parse(await readFile(path.join(root, "manifest.json"), "utf8"));
 const bilingual = (text) => Boolean(text?.en?.trim() && text["zh-CN"]?.trim());
-if (manifest.desktop?.script !== "desktop.js" || manifest.desktop.style !== "desktop.css")
-  throw new Error("manifest.json must declare desktop.js and desktop.css");
+if (manifest.manifestVersion !== 2) throw new Error("manifest.json must use manifestVersion 2");
+if (
+  manifest.desktop?.apiVersion !== 1 ||
+  manifest.desktop.script !== DESKTOP.script ||
+  manifest.desktop.style !== DESKTOP.style
+)
+  throw new Error(`manifest.json must declare ${DESKTOP.script} and ${DESKTOP.style} for Desktop`);
+if (
+  manifest.web?.apiVersion !== 1 ||
+  manifest.web.entry !== WEB.entry ||
+  manifest.web.style !== WEB.style
+)
+  throw new Error(`manifest.json must declare ${WEB.entry} and ${WEB.style} for Web`);
+if (manifest.backend?.apiVersion !== 1 || manifest.backend.entry !== BACKEND.entry)
+  throw new Error(`manifest.json must declare ${BACKEND.entry} for the backend`);
 if (
   !manifest.author?.trim() ||
   !bilingual(manifest.name) ||
@@ -32,23 +50,38 @@ if (
   throw new Error("The registry needs an author and an English and Chinese name and description");
 if ((manifest.screenshots ?? []).length > 4) throw new Error("At most 4 screenshots");
 
-const { outputFiles } = await build({
-  entryPoints: [path.join(root, "src", "index.ts")],
-  absWorkingDir: root,
-  bundle: true,
-  write: false,
-  platform: "browser",
-  format: "iife",
-  target: "es2022",
-  legalComments: "inline",
-  // tsconfig.json is for type checking; codexhost's build bundles without its options.
-  tsconfigRaw: {},
-});
-const [script] = outputFiles;
+const bundle = async (entry, options) => {
+  const { outputFiles } = await build({
+    entryPoints: [path.join(root, entry)],
+    absWorkingDir: root,
+    bundle: true,
+    write: false,
+    target: "es2022",
+    legalComments: "inline",
+    // tsconfig.json is for type checking; codexhost's build bundles without its options.
+    tsconfigRaw: {},
+    ...options,
+  });
+  const [output] = outputFiles;
+  return output;
+};
+
+const desktop = await bundle("src/index.ts", { platform: "browser", format: "iife" });
 // Desktop and the registry load the entry as the body of a strict function.
-new Script(`(function (define) {"use strict";\n${script.text}\n})`);
-await writeFile(path.join(root, "desktop.js"), script.contents);
-await copyFile(path.join(root, "src", "desktop.css"), path.join(root, "desktop.css"));
+new Script(`(function (define) {"use strict";\n${desktop.text}\n})`);
+const web = await bundle("src/web/index.ts", { platform: "browser", format: "esm" });
+const backend = await bundle("src/backend/index.ts", {
+  platform: "node",
+  format: "esm",
+  target: "node22",
+});
+await mkdir(path.join(root, "web"), { recursive: true });
+await mkdir(path.join(root, "backend"), { recursive: true });
+await writeFile(path.join(root, DESKTOP.script), desktop.contents);
+await copyFile(path.join(root, "src", "desktop.css"), path.join(root, DESKTOP.style));
+await writeFile(path.join(root, WEB.entry), web.contents);
+await copyFile(path.join(root, "src", "web", "web.css"), path.join(root, WEB.style));
+await writeFile(path.join(root, BACKEND.entry), backend.contents);
 
 const files = [];
 const add = async (name, limit) => {
@@ -57,7 +90,10 @@ const add = async (name, limit) => {
   files.push([name, bytes]);
   return bytes;
 };
-for (const name of ["manifest.json", "desktop.js", "desktop.css"]) await add(name, LIMITS[name]);
+await add("manifest.json", LIMITS["manifest.json"]);
+for (const name of [DESKTOP.script, WEB.entry, BACKEND.entry]) await add(name, LIMITS.script);
+for (const name of [DESKTOP.style, WEB.style]) await add(name, LIMITS.style);
+await add("LICENSE", LIMITS.license);
 const images = [
   ...(manifest.icon ? [[manifest.icon, LIMITS.icon]] : []),
   ...(manifest.screenshots ?? []).map((name) => [name, LIMITS.screenshot]),
